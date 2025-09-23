@@ -173,3 +173,58 @@ async def get_final_result(workflow_id: str):
     except Exception as e:
         print(f"Error in get_final_result: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/workflows")
+async def list_workflows():
+    """List all loan workflows with their status, summary, and metadata."""
+    client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+    try:
+        workflows_list = []
+
+        # List workflows - filter by loan workflows using the ID pattern
+        async for workflow in client.list_workflows("WorkflowType='SupervisorWorkflow'"):
+            try:
+                # Get workflow handle and query for summary
+                wf = client.get_workflow_handle(workflow.id)
+                summary = None
+                final_result = None
+
+                try:
+                    summary = await wf.query("get_summary")
+                except Exception:
+                    summary = None
+
+                try:
+                    final_result = await wf.query("get_final_result")
+                except Exception:
+                    final_result = None
+
+                # Extract key information for the table
+                workflow_info = {
+                    "workflow_id": workflow.id,
+                    "run_id": workflow.run_id,
+                    "status": workflow.status.name,
+                    "start_time": workflow.start_time.isoformat() if workflow.start_time else None,
+                    "close_time": workflow.close_time.isoformat() if workflow.close_time else None,
+                    "applicant_name": summary.get("application", {}).get("name") if summary else "Unknown",
+                    "applicant_id": summary.get("application", {}).get("applicant_id") if summary else "Unknown",
+                    "loan_amount": summary.get("application", {}).get("amount") if summary else 0,
+                    "ai_recommendation": summary.get("suggested_decision", {}).get("decision") if summary else "Pending",
+                    "ai_summary": summary.get("suggested_decision", {}).get("reasoning") if summary else "Processing...",
+                    "human_decision": final_result.get("human_decision", {}).get("action") if final_result else None,
+                    "summary": summary,
+                    "final_result": final_result
+                }
+
+                workflows_list.append(workflow_info)
+
+            except Exception as e:
+                print(f"Error processing workflow {workflow.id}: {e}")
+                continue
+
+        return {"workflows": workflows_list}
+
+    except Exception as e:
+        print(f"Error listing workflows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

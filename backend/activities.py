@@ -9,24 +9,28 @@ from strands.models.ollama import OllamaModel
 @activity.defn
 async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
     # Mock bank data - using Temporal heartbeat for sleep
+    # we want to simulate open banking API call from some microservice here. This needs to be separated out in individual lambda/microservice in prod
     activity.heartbeat()
     return {"applicant_id": applicant_id, "accounts": [{"type": "checking", "balance": random.randint(1000, 20000)}]}
 
 
 @activity.defn
 async def fetch_documents(applicant_id: str) -> Dict[str, Any]:
-    activity.heartbeat()
+    # we want to simulate document fetch from S3
     return {"documents": ["id_card.pdf", "paystub.pdf"]}
 
 
 @activity.defn
 async def fetch_credit_report(applicant_id: str) -> Dict[str, Any]:
+    # we want to simulate Credit bureau like experian or CIBIL  call from some microservice here. This needs to be separated out in individual lambda/microservice in prod. Also need to simulate APi failures and retries
+
     activity.heartbeat()
     return {"score": random.randint(300, 850), "history": []}
 
 
 @activity.defn
 async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # this needs to use bedrock document automation using bank statement credits
     # payload contains application, bank, credit
     app = payload.get("application", {})
     bank = payload.get("bank", {})
@@ -39,6 +43,8 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @activity.defn
 async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # this needs to use bedrock document automation using bank statement debits
+
     app = payload.get("application", {})
     bank = payload.get("bank", {})
     expenses = app.get("expenses", 1000)

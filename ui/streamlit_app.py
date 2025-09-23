@@ -10,7 +10,7 @@ except:
 
 st.title("Agentic Loan Underwriter — Demo")
 
-tab = st.tabs(["Submit", "Review"])
+tab = st.tabs(["Submit", "Review", "Workflows"])
 
 
 with tab[0]:
@@ -241,3 +241,229 @@ with tab[1]:
 
     elif review_workflow_id:
         st.info("👆 Click 'Fetch Loan Details' to load the application for review")
+
+
+with tab[2]:
+    st.header("🔄 Loan Workflows")
+
+    workflows_data = None
+
+    col1, col2 = st.columns([1, 4])
+
+    with col1:
+        if st.button("🔄 Refresh Workflows", type="secondary"):
+            with st.spinner("Loading workflows..."):
+                try:
+                    r = requests.get(f"{API_URL}/workflows", timeout=30)
+                    r.raise_for_status()
+                    workflows_data = r.json()
+                    st.session_state["workflows_data"] = workflows_data
+                    st.success(f"Loaded {len(workflows_data.get('workflows', []))} workflows")
+                except Exception as e:
+                    st.error(f"Failed to load workflows: {e}")
+
+    with col2:
+        st.info("Click 'Refresh Workflows' to load the latest loan applications and their status")
+
+    # Check if we have cached workflows data
+    if "workflows_data" in st.session_state:
+        workflows_data = st.session_state["workflows_data"]
+
+    if workflows_data and workflows_data.get("workflows"):
+        workflows = workflows_data["workflows"]
+
+        # Summary metrics
+        st.subheader("📊 Summary")
+
+        total_workflows = len(workflows)
+        running_workflows = len([w for w in workflows if w["status"] in ["RUNNING", "WORKFLOW_EXECUTION_STATUS_RUNNING"]])
+        completed_workflows = len([w for w in workflows if w["status"] in ["COMPLETED", "WORKFLOW_EXECUTION_STATUS_COMPLETED"]])
+        approved_loans = len([w for w in workflows if w.get("human_decision") == "approve"])
+        rejected_loans = len([w for w in workflows if w.get("human_decision") == "reject"])
+
+        metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
+
+        with metric_col1:
+            st.metric("Total Workflows", total_workflows)
+        with metric_col2:
+            st.metric("Running", running_workflows)
+        with metric_col3:
+            st.metric("Completed", completed_workflows)
+        with metric_col4:
+            st.metric("Approved", approved_loans)
+        with metric_col5:
+            st.metric("Rejected", rejected_loans)
+
+        st.markdown("---")
+
+        # Workflows table
+        st.subheader("📋 Workflows Details")
+
+        # Create a scrollable table using st.dataframe
+        display_data = []
+
+        for workflow in workflows:
+            # Format the status with color indicators
+            status = workflow.get("status", "Unknown").replace("WORKFLOW_EXECUTION_STATUS_", "")
+
+            # Format loan amount
+            loan_amount = workflow.get("loan_amount", 0)
+            formatted_amount = f"${loan_amount:,.2f}" if loan_amount else "N/A"
+
+            # Format timestamps
+            start_time = workflow.get("start_time")
+            formatted_start_time = start_time[:19].replace("T", " ") if start_time else "N/A"
+
+            display_data.append({
+                "Workflow ID": workflow.get("workflow_id", "N/A")[:20] + "...",
+                "Applicant": workflow.get("applicant_name", "Unknown"),
+                "Applicant ID": workflow.get("applicant_id", "Unknown"),
+                "Loan Amount": formatted_amount,
+                "Status": status,
+                "Human Decision": workflow.get("human_decision", "Pending") or "Pending",
+                "Started": formatted_start_time
+            })
+
+        # Display the table with custom styling
+        st.dataframe(
+            display_data,
+            use_container_width=True,
+            height=400,  # Make it scrollable
+            column_config={
+                "Workflow ID": st.column_config.TextColumn("Workflow ID", width="small"),
+                "Applicant": st.column_config.TextColumn("Applicant", width="small"),
+                "Applicant ID": st.column_config.TextColumn("ID", width="small"),
+                "Loan Amount": st.column_config.TextColumn("Amount", width="small"),
+                "Status": st.column_config.TextColumn("Status", width="small"),
+                "Human Decision": st.column_config.TextColumn("Decision", width="small"),
+                "Started": st.column_config.TextColumn("Started", width="medium")
+            }
+        )
+
+        # Workflow details expander
+        st.markdown("---")
+        st.subheader("🔍 Workflow Details")
+
+        # Select a workflow to view details
+        workflow_ids = [w["workflow_id"] for w in workflows]
+        selected_workflow_id = st.selectbox(
+            "Select a workflow to view detailed information:",
+            [""] + workflow_ids,
+            format_func=lambda x: x[:30] + "..." if len(x) > 30 else x if x else "Select a workflow..."
+        )
+
+        if selected_workflow_id:
+            selected_workflow = next((w for w in workflows if w["workflow_id"] == selected_workflow_id), None)
+
+            if selected_workflow:
+                # Create tabs for different details
+                detail_tabs = st.tabs(["📋 Application", "🤖 AI Analysis", "👤 Human Review", "⚙️ Technical"])
+
+                with detail_tabs[0]:
+                    st.markdown("#### Loan Application Details")
+                    summary = selected_workflow.get("summary", {})
+                    application = summary.get("application", {}) if summary else {}
+
+                    app_col1, app_col2 = st.columns(2)
+                    with app_col1:
+                        st.text(f"Name: {application.get('name', 'N/A')}")
+                        st.text(f"Applicant ID: {application.get('applicant_id', 'N/A')}")
+                        st.text(f"Loan Amount: ${application.get('amount', 0):,.2f}")
+
+                    with app_col2:
+                        st.text(f"Monthly Income: ${application.get('income', 0):,.2f}")
+                        st.text(f"Monthly Expenses: ${application.get('expenses', 0):,.2f}")
+                        net_income = (application.get('income', 0) or 0) - (application.get('expenses', 0) or 0)
+                        st.text(f"Net Income: ${net_income:,.2f}")
+
+                with detail_tabs[1]:
+                    st.markdown("#### AI Analysis Results")
+
+                    # Get AI recommendation and summary from the proper location
+                    summary = selected_workflow.get("summary", {})
+                    suggested_decision = summary.get("suggested_decision", {}) if summary else {}
+
+                    # Show additional suggested decision details if available
+                    if suggested_decision:
+                        st.markdown("**Additional AI Analysis:**")
+                        for key, value in suggested_decision.items():
+                            if value:
+                                st.text(f"• {key.replace('_', ' ').title()}: {value}")
+
+                    # Detailed assessments if available
+                    if summary and summary.get("assessments"):
+                        st.markdown("---")
+                        st.markdown("**Detailed Assessments:**")
+                        assessments = summary["assessments"]
+
+                        for assessment_type, assessment_data in assessments.items():
+                            if assessment_data:
+                                st.markdown(f"**{assessment_type.replace('_', ' ').title()}:**")
+                                if isinstance(assessment_data, dict):
+                                    for key, value in assessment_data.items():
+                                        st.text(f"  • {key.replace('_', ' ').title()}: {value}")
+                                else:
+                                    st.text(f"  • {assessment_data}")
+
+                with detail_tabs[2]:
+                    st.markdown("#### Human Review")
+
+                    human_decision = selected_workflow.get("human_decision")
+                    if human_decision:
+                        st.markdown(f"**Decision:** {human_decision}")
+
+                        final_result = selected_workflow.get("final_result", {})
+                        if final_result and final_result.get("human_decision"):
+                            human_review = final_result["human_decision"]
+                            if human_review.get("note"):
+                                st.markdown(f"**Note:** {human_review['note']}")
+                    else:
+                        st.info("No human decision recorded yet")
+
+                        # Quick review buttons
+                        if selected_workflow.get("status") in ["RUNNING", "WORKFLOW_EXECUTION_STATUS_RUNNING"]:
+                            st.markdown("**Quick Review:**")
+                            review_col1, review_col2 = st.columns(2)
+
+                            with review_col1:
+                                if st.button(f"✅ Approve {selected_workflow_id[:8]}...", key=f"approve_{selected_workflow_id}"):
+                                    try:
+                                        r = requests.post(f"{API_URL}/workflow/{selected_workflow_id}/review",
+                                                        json={"action": "approve", "note": "Approved from workflows tab"}, timeout=10)
+                                        r.raise_for_status()
+                                        st.success("Loan approved!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to approve: {e}")
+
+                            with review_col2:
+                                if st.button(f"❌ Reject {selected_workflow_id[:8]}...", key=f"reject_{selected_workflow_id}"):
+                                    try:
+                                        r = requests.post(f"{API_URL}/workflow/{selected_workflow_id}/review",
+                                                        json={"action": "reject", "note": "Rejected from workflows tab"}, timeout=10)
+                                        r.raise_for_status()
+                                        st.success("Loan rejected!")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to reject: {e}")
+
+                with detail_tabs[3]:
+                    st.markdown("#### Technical Information")
+
+                    tech_col1, tech_col2 = st.columns(2)
+
+                    with tech_col1:
+                        st.text(f"Workflow ID: {selected_workflow.get('workflow_id', 'N/A')}")
+                        st.text(f"Run ID: {selected_workflow.get('run_id', 'N/A')}")
+                        st.text(f"Status: {selected_workflow.get('status', 'N/A')}")
+
+                    with tech_col2:
+                        st.text(f"Start Time: {selected_workflow.get('start_time', 'N/A')}")
+                        st.text(f"Close Time: {selected_workflow.get('close_time', 'N/A')}")
+
+                    # Raw data expander
+                    with st.expander("Raw Workflow Data"):
+                        st.json(selected_workflow)
+
+    else:
+        st.info("No workflows loaded. Click 'Refresh Workflows' to load loan applications.")
