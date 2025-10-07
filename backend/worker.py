@@ -28,7 +28,8 @@ async def run_worker():
         activities=[
             activities.fetch_bank_account,
             activities.fetch_documents,
-            activities.fetch_credit_report,
+            activities.fetch_credit_report_cibil,
+            activities.fetch_credit_report_experian,
             activities.income_assessment,
             activities.expense_assessment,
             activities.credit_assessment,
