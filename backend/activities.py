@@ -119,8 +119,11 @@ async def aggregate_and_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
         llm_error = False
 
     except Exception as e:
-        explanation = f"(failed to call ollama: {e})"
-        llm_error = True
+        raise ApplicationError(
+            f"Ollama LLM call failed: {str(e)}",
+            type="OllamaLLMError",
+            non_retryable=False
+        )
 
     # TODO: mock decision logic fallback; if LLM failed, force manual review
     recommendation = (

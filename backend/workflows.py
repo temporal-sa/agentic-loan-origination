@@ -103,8 +103,7 @@ class SupervisorWorkflow:
         decision = await workflow.execute_activity(
             "aggregate_and_decide",
             {"application": application, "income": income_res, "expense": expense_res, "credit": credit_res, "docs": docs},
-            start_to_close_timeout=timedelta(seconds=120),
-            retry_policy=self._default_retry_policy
+            start_to_close_timeout=timedelta(seconds=1200),
         )
 
         # 4. Prepare summary for human review and expose via query
