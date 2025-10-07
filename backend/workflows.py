@@ -1,5 +1,6 @@
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 from datetime import timedelta
 from typing import Dict, Any, Optional
 
@@ -52,12 +53,26 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
-        credit = await workflow.execute_activity(
-            "fetch_credit_report",
-            application["applicant_id"],
-            start_to_close_timeout=timedelta(seconds=60),
-            retry_policy=self._default_retry_policy
-        )
+        # Try CIBIL first, fallback to Experian if it fails
+        # This showcases Temporal's ability to handle provider failures gracefully
+        try:
+            credit = await workflow.execute_activity(
+                "fetch_credit_report_cibil",
+                application["applicant_id"],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(
+                    maximum_attempts=2  # Don't retry CIBIL, fail fast and fallback
+                )
+            )
+        except ActivityError:
+            # If CIBIL fails, fallback to Experian
+            workflow.logger.info("CIBIL failed, falling back to Experian")
+            credit = await workflow.execute_activity(
+                "fetch_credit_report_experian",
+                application["applicant_id"],
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=self._default_retry_policy
+            )
 
         # 2. Run specialist agents in parallel
         income_task = workflow.execute_activity(

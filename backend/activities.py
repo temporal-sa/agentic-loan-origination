@@ -34,12 +34,35 @@ async def fetch_documents(applicant_id: str) -> Dict[str, Any]:
 
 
 @activity.defn
-async def fetch_credit_report(applicant_id: str) -> Dict[str, Any]:
-    # TODO: we want to simulate Credit bureau like experian or CIBIL  call from some microservice here. This needs to be separated out in individual lambda/microservice in prod. Also need to simulate APi failures and retries
-
+async def fetch_credit_report_cibil(applicant_id: str) -> Dict[str, Any]:
+    """
+    Fetch credit report from CIBIL bureau.
+    Simulates API failure to demonstrate Temporal's error handling.
+    """
     activity.heartbeat()
-    return {"score": random.randint(300, 850), "history": []}
 
+    # Simulate CIBIL API failure
+    raise ApplicationError(
+        "CIBIL API temporarily unavailable",
+        type="CIBILAPIError",
+        non_retryable=False  # Don't retry CIBIL, fallback to Experian instead
+    )
+
+
+@activity.defn
+async def fetch_credit_report_experian(applicant_id: str) -> Dict[str, Any]:
+    """
+    Fetch credit report from Experian bureau.
+    This acts as a fallback when CIBIL fails.
+    """
+    activity.heartbeat()
+
+    # Simulate successful Experian response
+    return {
+        "score": random.randint(300, 850),
+        "history": [],
+        "provider": "Experian"
+    }
 
 @activity.defn
 async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
