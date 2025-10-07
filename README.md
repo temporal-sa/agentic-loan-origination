@@ -35,7 +35,7 @@ sequenceDiagram
 	Note over Worker, Activities: Data Fetching Phase
 	Worker->>Activities: fetch_bank_account(applicant_id)
 	Worker->>Activities: fetch_documents(applicant_id)
-	Worker->>Activities: fetch_credit_report(applicant_id)
+	Worker->>Activities: fetch_credit_report_cibil(applicant_id) fallback to fetch_credit_report_experian
 	Activities-->>Worker: mock data responses
 
 	Note over Worker, Activities: Parallel Specialist Assessments
