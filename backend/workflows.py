@@ -32,7 +32,7 @@ class SupervisorWorkflow:
             initial_interval=timedelta(seconds=1), # The time to wait before the first retry attempt after a failure.
             maximum_interval=timedelta(seconds=10), # The maximum time to wait between retry attempts; the backoff will not exceed this value.
             backoff_coefficient=2.0, # The multiplier applied to the wait interval after each failed attempt (exponential backoff).
-            maximum_attempts=4 # The maximum number of retry attempts before giving up.
+            maximum_attempts=10 # The maximum number of retry attempts before giving up.
         )
 
     @workflow.run

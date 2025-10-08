@@ -88,6 +88,7 @@ sequenceDiagram
 ## Prerequisites
 - **Temporal Server**: Running locally (default at localhost:7233)
 - **Ollama**: Local installation with model (default: `llama3.2:1b`, configurable via `.env`)
+- **Mockoon**: Mock API server running on port 3233 (configuration available in `mockoon` folder)
 - **Python 3.9+**: Required for all dependencies
 - **Dependencies**: Install from `requirements.txt`
 
@@ -111,6 +112,7 @@ cp .env.example .env
 3. **Start required services:**
    - Start Temporal server (see [Temporal docs](https://docs.temporal.io/dev-guide/))
    - Start Ollama with your preferred model (e.g., `ollama run llama3.2:1b`)
+   - Start Mockoon with the configuration from the `mockoon` folder (import the JSON config file into Mockoon and start the mock API on port 3233)
 
 4. **Launch the application:**
 
