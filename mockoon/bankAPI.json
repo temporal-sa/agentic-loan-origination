@@ -1,0 +1,99 @@
+{
+  "uuid": "e8ac890e-7b36-42b0-bd0c-019f01a0db67",
+  "lastMigration": 33,
+  "name": "bankAPI (copy)",
+  "endpointPrefix": "",
+  "latency": 0,
+  "port": 3233,
+  "hostname": "",
+  "folders": [],
+  "routes": [
+    {
+      "uuid": "4fb297d4-2d4f-405e-a779-8220ca3276b3",
+      "type": "http",
+      "documentation": "",
+      "method": "get",
+      "endpoint": "bank",
+      "responses": [
+        {
+          "uuid": "d5abe918-426a-48d1-90ae-36e395379977",
+          "body": "{\n  \"applicant_id\": 1,\n  \"accounts\": [\n    {\n      \"type\": \"checking\",\n    \"balance\": 40000\n    }\n  ]\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "",
+          "headers": [
+            {
+              "key": "",
+              "value": ""
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    }
+  ],
+  "rootChildren": [
+    {
+      "type": "route",
+      "uuid": "4fb297d4-2d4f-405e-a779-8220ca3276b3"
+    }
+  ],
+  "proxyMode": false,
+  "proxyHost": "",
+  "proxyRemovePrefix": false,
+  "tlsOptions": {
+    "enabled": false,
+    "type": "CERT",
+    "pfxPath": "",
+    "certPath": "",
+    "keyPath": "",
+    "caPath": "",
+    "passphrase": ""
+  },
+  "cors": true,
+  "headers": [
+    {
+      "key": "Content-Type",
+      "value": "application/json"
+    },
+    {
+      "key": "Access-Control-Allow-Origin",
+      "value": "*"
+    },
+    {
+      "key": "Access-Control-Allow-Methods",
+      "value": "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS"
+    },
+    {
+      "key": "Access-Control-Allow-Headers",
+      "value": "Content-Type, Origin, Accept, Authorization, Content-Length, X-Requested-With"
+    }
+  ],
+  "proxyReqHeaders": [
+    {
+      "key": "",
+      "value": ""
+    }
+  ],
+  "proxyResHeaders": [
+    {
+      "key": "",
+      "value": ""
+    }
+  ],
+  "data": [],
+  "callbacks": []
+}
