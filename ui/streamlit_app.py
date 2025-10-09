@@ -7,8 +7,11 @@ try:
 except:
     API_URL = "http://localhost:8000"
 
-
-st.title("Agentic Loan Underwriter — Demo")
+st.set_page_config(
+    page_title="Intelligent Loan Underwriter",
+    page_icon="",
+)
+st.title("Intelligent Loan Underwriter — Demo")
 
 tab = st.tabs(["Submit", "Review", "Workflows"])
 
@@ -16,7 +19,7 @@ tab = st.tabs(["Submit", "Review", "Workflows"])
 with tab[0]:
     with st.form("submit_form"):
         applicant_id = st.text_input("Applicant ID", "12345")
-        name = st.text_input("Name", "Alice")
+        name = st.text_input("Name", "Darshit")
         amount = st.number_input("Loan amount", value=5000.0)
         income = st.number_input("Declared income", value=6000.0)
         expenses = st.number_input("Monthly expenses", value=2000.0)
