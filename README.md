@@ -22,69 +22,89 @@ sequenceDiagram
 	participant User as Applicant / Underwriter
 	participant Streamlit as Streamlit UI
 	participant FastAPI as FastAPI Backend
-	participant Strands as Strands Agent
 	participant Temporal as Temporal Server
 	participant Worker as Temporal Worker
 	participant Supervisor as SupervisorWorkflow
-	participant Activities as Activities
+	participant DataAgent as DataFetchAgent
+	participant CreditAgent as CreditReportAgent
+	participant Mockoon as Mock APIs
 	participant Ollama as Ollama (LLM)
 
 	User->>Streamlit: Submit loan application
 	Streamlit->>FastAPI: POST /submit (application data)
-	FastAPI->>Strands: structured_output validation (fallback to Pydantic)
-	Strands-->>FastAPI: validated LoanApplication
 	FastAPI->>Temporal: start_workflow("SupervisorWorkflow", data, workflow_id)
 	Temporal->>Worker: schedule activities on task queue
 
-	Note over Worker, Activities: Data Fetching Phase
-	Worker->>Activities: fetch_bank_account(applicant_id)
-	Worker->>Activities: fetch_documents(applicant_id)
-	Worker->>Activities: fetch_credit_report_cibil(applicant_id) fallback to fetch_credit_report_experian
-	Activities-->>Worker: mock data responses
+	Note over Worker, Supervisor: PHASE 1: Data Acquisition (Sequential)
+	Worker->>DataAgent: fetch_bank_account(applicant_id)
+	DataAgent->>Mockoon: HTTP GET /bank?applicant_id=X
+	Mockoon-->>DataAgent: bank account data
+	DataAgent-->>Worker: validated bank data
 
-	Note over Worker, Activities: Parallel Specialist Assessments
-	par Specialist Analysis
-		Worker->>Activities: income_assessment(application, bank, credit)
-		Activities->>Strands: Agent with Ollama for income analysis
-		Worker->>Activities: expense_assessment(application, bank)
-		Activities->>Strands: Agent with Ollama for expense analysis
-		Worker->>Activities: credit_assessment(application, credit)
-		Activities->>Strands: Agent with Ollama for credit analysis
+	Worker->>DataAgent: fetch_documents(applicant_id)
+	DataAgent->>Mockoon: HTTP GET /documents?applicant_id=X
+	Mockoon-->>DataAgent: document metadata
+	DataAgent-->>Worker: validated documents
+
+	Worker->>CreditAgent: fetch_credit_report_cibil(applicant_id)
+	CreditAgent->>Mockoon: HTTP GET /cibil?applicant_id=X
+	alt CIBIL Success
+		Mockoon-->>CreditAgent: credit report data
+		CreditAgent-->>Worker: validated credit (provider: CIBIL)
+	else CIBIL Failure (after 2 retries)
+		Note over Supervisor: Temporal orchestrates fallback
+		Worker->>CreditAgent: fetch_credit_report_experian(applicant_id)
+		CreditAgent->>Mockoon: HTTP GET /experian?applicant_id=X
+		Mockoon-->>CreditAgent: credit report data
+		CreditAgent-->>Worker: validated credit (provider: Experian)
 	end
-	Activities-->>Worker: specialist assessment results
 
-	Worker->>Activities: aggregate_and_decide(all data)
-	Activities->>Strands: Agent with Ollama for final decision
-	Strands->>Ollama: generate summary and recommendation
-	Ollama-->>Strands: AI decision + explanation
-	Strands-->>Activities: structured decision
-	Activities-->>Worker: final recommendation
-	Worker-->>Supervisor: store summary, wait for human review
+	Note over Worker, Supervisor: PHASE 2: Parallel Specialist Assessments
+	par Income Assessment
+		Worker->>Worker: income_assessment(app, bank, credit)
+		Note over Worker: Heuristic: income/amount ratio > 2
+		Worker->>Worker: income_ok + income value
+	and Expense Assessment
+		Worker->>Worker: expense_assessment(app, bank)
+		Note over Worker: Heuristic: disposable income check
+		Worker->>Worker: affordability_ok + expenses
+	and Credit Assessment
+		Worker->>Worker: credit_assessment(app, credit)
+		Note over Worker: Heuristic: score > 620
+		Worker->>Worker: credit_ok + score
+	end
 
+	Note over Worker, Supervisor: PHASE 3: Decision Aggregation with LLM
+	Worker->>Ollama: aggregate_and_decide(all data)
+	Note over Ollama: Strands Agent + Ollama Model
+	Ollama-->>Worker: AI summary + recommendation
+	Worker-->>Supervisor: Store summary with suggested decision
+
+	Note over Supervisor: PHASE 4: Human-in-the-Loop Review
 	Note over Supervisor: Workflow pauses, exposes queries
 
 	User->>Streamlit: Navigate to Review tab
 	Streamlit->>FastAPI: GET /workflow/{id}/summary
 	FastAPI->>Temporal: query("get_summary")
 	Temporal->>Supervisor: get_summary query
-	Supervisor-->>Temporal: return summary data
-	Temporal-->>FastAPI: summary with AI assessments
+	Supervisor-->>Temporal: summary with assessments + AI decision
+	Temporal-->>FastAPI: complete summary
 	FastAPI-->>Streamlit: display summary JSON
 	Streamlit-->>User: Show AI analysis + recommendation
 
 	User->>Streamlit: Click Approve/Reject
 	Streamlit->>FastAPI: POST /workflow/{id}/review {"action": "approve/reject"}
-	FastAPI->>Strands: validate review data (fallback to Pydantic)
-	Strands-->>FastAPI: validated review
 	FastAPI->>Temporal: signal("human_review", decision)
 	Temporal->>Supervisor: receive human_review signal
 	Note over Supervisor: Workflow continues and completes
 	Supervisor-->>Temporal: finalize with human decision
 
-	opt Optional Final Status Check
+	opt Final Status Check
 		Streamlit->>FastAPI: GET /workflow/{id}/final
 		FastAPI->>Temporal: query("get_final_result")
-		Temporal-->>FastAPI: final result
+		Temporal->>Supervisor: get_final_result query
+		Supervisor-->>Temporal: complete result
+		Temporal-->>FastAPI: summary + human decision
 		FastAPI-->>Streamlit: display final outcome
 	end
 ```
