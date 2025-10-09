@@ -50,13 +50,26 @@ When making requests:
                 url=url
             )
 
-            # Extract body from response
+            # Extract status code and body from response
+            status_code = None
             body_text = None
+
             for item in response.get("content", []):
                 if isinstance(item, dict) and "text" in item:
-                    if item["text"].startswith("Body:"):
-                        body_text = item["text"][len("Body:"):].strip()
-                        break
+                    text = item["text"]
+                    # Extract status code
+                    if text.startswith("Status:"):
+                        status_code = text[len("Status:"):].strip()
+                    # Extract body
+                    elif text.startswith("Body:"):
+                        body_text = text[len("Body:"):].strip()
+
+            # Check for HTTP error status codes
+            if status_code and not status_code.startswith("2"):
+                error_msg = f"HTTP {status_code} error from {data_type} API"
+                if body_text:
+                    error_msg += f": {body_text}"
+                raise ValueError(error_msg)
 
             if not body_text:
                 raise ValueError(f"No body found in {data_type} API response")
@@ -68,6 +81,11 @@ When making requests:
             return parsed_data
 
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in {data_type} API response: {str(e)}")
+            error_msg = f"Invalid JSON in {data_type} API response: {str(e)}"
+            if body_text:
+                error_msg += f". Response body: {body_text[:200]}"
+            if status_code:
+                error_msg += f". HTTP Status: {status_code}"
+            raise ValueError(error_msg)
         except Exception as e:
             raise Exception(f"Failed to fetch {data_type} data: {str(e)}")
