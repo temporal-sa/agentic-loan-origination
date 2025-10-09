@@ -1,102 +1,165 @@
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from typing import Dict, Any
-import random
-import json
 import os
-from strands import Agent, tool
+from strands import Agent
 from strands.models.ollama import OllamaModel
-from strands_tools import http_request
+from classes.agents import DataFetchAgent, CreditReportAgent
 
 
-@tool
-def bank_api_caller(url: str) -> Dict[str, Any]:
-    """
-    A reusable tool that makes HTTP requests to banking APIs.
-    Uses Strands agent with HTTP capabilities to fetch and process data.
-
-    Args:
-        url: The API endpoint URL to call
-
-    Returns:
-        API response data as dictionary
-    """
-    # Create specialized agent with HTTP request capability
-    http_agent = Agent(
-        system_prompt="You are a banking API assistant. Make HTTP requests and return only JSON response data from API as is nothing else.",
-        tools=[http_request]
-    )
-
-    # Use agent to make HTTP request based on prompt
-    response = http_agent.tool.http_request(
-        method="GET",
-        url=url
-    )
-
-    body_text = next((item["text"] for item in response["content"] if item["text"].startswith("Body:")), None)
-    if body_text and body_text.startswith("Body:"):
-        # Strip "Body:" prefix and whitespace
-        body_json_str = body_text[len("Body:"):].strip()
-        
-    return json.loads(body_json_str)
+# ============================================================================
+# DATA ACQUISITION PHASE - Strands HTTP Agents
+# ============================================================================
+# These activities demonstrate Strands agents making HTTP requests to external
+# APIs with intelligent error handling and data validation. The agents can:
+# - Make HTTP requests with proper error handling
+# - Parse and validate API responses
+# - Provide context-aware error messages
+# - Handle malformed data gracefully
+# ============================================================================
 
 
 @activity.defn
 async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
     """
-    Fetch bank account data using Strands HTTP request tooling.
-    Demonstrates Strands agent capability to make HTTP requests.
-    Raises ApplicationError if the API call fails, which will trigger retries.
+    Fetch bank account data using Strands HTTP agent.
+
+    ARCHITECTURE NOTE:
+    - Temporal Activity (Outer Loop): Handles retries, timeouts, durability
+    - Strands Agent (Inner Loop): Makes HTTP request, validates data
+
+    This demonstrates the separation of concerns:
+    - Temporal ensures the activity eventually succeeds/fails reliably
+    - Strands agent handles the intelligent data fetching logic
     """
     try:
-        # Use the reusable bank_api_caller tool
-        url = f"http://localhost:3232/bank?applicant_id={applicant_id}"
-        response = bank_api_caller(url=url)
+        # Initialize Strands agent for this activity execution
+        data_agent = DataFetchAgent()
 
-        return response
+        # Agent fetches data from bank API
+        url = f"http://localhost:3233/bank?applicant_id={applicant_id}"
+        bank_data = data_agent.fetch_data(url, "bank account")
+
+        # Validate essential fields
+        if "accounts" not in bank_data:
+            raise ValueError("Bank API response missing 'accounts' field")
+
+        return bank_data
 
     except Exception as e:
         # Raise ApplicationError to trigger Temporal's retry mechanism
-        # When max attempts are exhausted, this will fail the activity and workflow
+        # Temporal will retry this activity based on the workflow's retry policy
         raise ApplicationError(
             f"Failed to fetch bank account data: {str(e)}",
             type="BankAPIError",
-            non_retryable=False  # Allow retries
+            non_retryable=False  # Allow Temporal to retry
         )
 
 
 @activity.defn
 async def fetch_documents(applicant_id: str) -> Dict[str, Any]:
-    # TODO: we want to simulate document fetch from S3
-    return {"documents": ["id_card.pdf", "paystub.pdf"]}
+    """
+    Fetch applicant documents using Strands HTTP agent.
+
+    ARCHITECTURE NOTE:
+    - Temporal Activity: Provides durable execution and retry logic
+    - Strands Agent: Intelligently fetches and validates document metadata
+
+    In a production system, this would fetch documents from S3 or document storage.
+    The agent could validate document types, check file sizes, verify formats, etc.
+    """
+    try:
+        # Initialize Strands agent for document fetching
+        data_agent = DataFetchAgent()
+
+        # Agent fetches document metadata from API
+        url = f"http://localhost:3233/documents?applicant_id={applicant_id}"
+        documents_data = data_agent.fetch_data(url, "documents")
+
+        # Validate response structure
+        if "documents" not in documents_data:
+            raise ValueError("Documents API response missing 'documents' field")
+
+        doc_count = len(documents_data.get("documents", []))
+        activity.logger.info(f"Successfully retrieved {doc_count} documents")
+
+        return documents_data
+
+    except Exception as e:
+        raise ApplicationError(
+            f"Failed to fetch documents: {str(e)}",
+            type="DocumentAPIError",
+            non_retryable=False
+        )
 
 
 @activity.defn
 async def fetch_credit_report_cibil(applicant_id: str) -> Dict[str, Any]:
     """
-    Fetch credit report from CIBIL bureau.
-    Simulates API failure to demonstrate Temporal's error handling.
+    Fetch credit report from CIBIL bureau using Strands agent.
+
+    ARCHITECTURE NOTE - TEMPORAL'S FALLBACK PATTERN:
+    - This activity is configured with LIMITED retries in the workflow
+    - If it fails, Temporal orchestrates the fallback to Experian
+    - The workflow layer handles the provider fallback logic
+    - The agent layer handles data fetching and validation
+
+    This demonstrates:
+    - Temporal: Provider-level fallback orchestration (CIBIL -> Experian)
+    - Strands: Data-level validation and quality checking
     """
-    # Simulate CIBIL API failure
-    raise ApplicationError(
-        "CIBIL API temporarily unavailable",
-        type="CIBILAPIError",
-        non_retryable=False  # Don't retry CIBIL, fallback to Experian instead
-    )
+    try:
+
+        # Initialize credit report agent
+        credit_agent = CreditReportAgent()
+
+        # Fetch and validate from CIBIL
+        url = f"http://localhost:3233/cibil?applicant_id={applicant_id}"
+        credit_data = credit_agent.fetch_and_validate_credit_report(
+            applicant_id, "CIBIL", url
+        )
+
+        return credit_data
+
+    except Exception as e:
+        # Temporal will try Experian as fallback (see workflow)
+        raise ApplicationError(
+            f"Failed to fetch CIBIL credit report: {str(e)}",
+            type="CibilAPIError",
+            non_retryable=False
+        )
 
 
 @activity.defn
 async def fetch_credit_report_experian(applicant_id: str) -> Dict[str, Any]:
     """
-    Fetch credit report from Experian bureau.
-    This acts as a fallback when CIBIL fails.
+    Fetch credit report from Experian bureau using Strands agent.
+
+    ARCHITECTURE NOTE - FALLBACK PROVIDER:
+    - This activity is called by Temporal when CIBIL fails
+    - Demonstrates Temporal's orchestration of fallback strategies
+    - The agent validates data the same way, ensuring consistency
     """
-    # Simulate successful Experian response
-    return {
-        "score": random.randint(300, 850),
-        "history": [],
-        "provider": "Experian"
-    }
+    try:
+
+        # Initialize credit report agent (same validation logic)
+        credit_agent = CreditReportAgent()
+
+        # Fetch and validate from Experian
+        url = f"http://localhost:3233/experian?applicant_id={applicant_id}"
+        credit_data = credit_agent.fetch_and_validate_credit_report(
+            applicant_id, "Experian", url
+        )
+
+        return credit_data
+
+    except Exception as e:
+        # Both providers failed - workflow will handle final failure
+        raise ApplicationError(
+            f"Failed to fetch Experian credit report: {str(e)}",
+            type="ExperianAPIError",
+            non_retryable=False
+        )
 
 @activity.defn
 async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:

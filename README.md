@@ -4,9 +4,13 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 
 ## Architecture
 - **FastAPI Backend**: REST API with endpoints for loan submission, workflow status checking, and human review
-- **Temporal Workflows**: SupervisorWorkflow orchestrates the entire loan processing pipeline
+- **Temporal Workflows**: SupervisorWorkflow orchestrates the entire loan processing pipeline with durable execution
+- **Strands HTTP Agents**: Reusable agent classes for intelligent data fetching with error handling and validation
+  - `DataFetchAgent`: Generic HTTP data fetching with validation
+  - `CreditReportAgent`: Specialized credit report validation with multi-provider support
 - **Specialist Activities**: Mock data fetching (bank, documents, credit) and AI-powered assessments (income, expense, credit analysis)
 - **Strands Integration**: Agent orchestration with structured output validation using Ollama models
+- **Provider Fallback**: Temporal-orchestrated fallback from CIBIL to Experian for credit reports
 - **Streamlit UI**: User interface for loan submission and underwriter review workflow
 - **Environment Configuration**: Configurable Ollama and Temporal settings via `.env` file
 
@@ -146,22 +150,31 @@ cp .env.example .env
 ## Project Structure
 ```
 ├── backend/
-│   ├── main.py          # FastAPI application and API endpoints
-│   ├── workflows.py     # Temporal SupervisorWorkflow definition
-│   ├── activities.py    # Temporal activities (data fetching & AI assessments)
-│   └── worker.py        # Temporal worker process
+│   ├── main.py                              # FastAPI application and API endpoints
+│   ├── workflows.py                         # Temporal SupervisorWorkflow definition
+│   ├── activities.py                        # Temporal activities (data fetching & AI assessments)
+│   ├── worker.py                            # Temporal worker process
+│   └── classes/
+│       └── agents/
+│           ├── data_fetch_agent.py          # Strands agent for HTTP data fetching
+│           └── credit_report_agent.py       # Strands agent for credit report validation
 ├── ui/
-│   └── streamlit_app.py # Streamlit user interface
-├── .env.example         # Environment configuration template
-└── requirements.txt     # Python dependencies
+│   └── streamlit_app.py                     # Streamlit user interface
+├── mockoon/                                 # Mock API configuration for local development
+├── .env.example                             # Environment configuration template
+└── requirements.txt                         # Python dependencies
 ```
 
 ## Development Notes
-- Uses mock data for external integrations (bank, documents, credit reports)
-- Strands agent fallback: system gracefully handles Strands initialization failures
-- Configurable Ollama model selection via environment variables
-- Production deployment would require secure API integrations and authentication
-- Workflow supports binary approve/reject decisions with AI-generated explanations
+- **Mock Data Services**: Uses Mockoon for simulating bank, document, and credit bureau APIs
+- **Agent Architecture**: Strands agents are organized in reusable classes under `backend/classes/agents/`
+- **Separation of Concerns**:
+  - Temporal activities handle durable execution and retry logic (outer loop)
+  - Strands agents handle intelligent data fetching and validation (inner loop)
+- **Provider Fallback Pattern**: Temporal workflow orchestrates CIBIL → Experian fallback for credit reports
+- **Configurable LLM**: Ollama model selection via environment variables (default: `llama3.2:1b`)
+- **Production Considerations**: Would require secure API integrations, authentication, and real data providers
+- **Human-in-the-Loop**: Workflow supports binary approve/reject decisions with AI-generated explanations
 
 ## Contributing
 
