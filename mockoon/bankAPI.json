@@ -17,7 +17,7 @@
       "responses": [
         {
           "uuid": "d5abe918-426a-48d1-90ae-36e395379977",
-          "body": "{\n  \"applicant_id\": 1,\n  \"accounts\": [\n    {\n      \"type\": \"checking\",\n    \"balance\": 40000\n    }\n  ]\n}",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"accounts\": [\n    {\n      \"type\": \"checking\",\n      \"balance\": 40000,\n      \"account_number\": \"****1234\",\n      \"transactions_count\": 150\n    },\n    {\n      \"type\": \"savings\",\n      \"balance\": 15000,\n      \"account_number\": \"****5678\",\n      \"transactions_count\": 45\n    }\n  ],\n  \"total_balance\": 55000,\n  \"bank_name\": \"First National Bank\"\n}",
           "latency": 0,
           "statusCode": 200,
           "label": "",
@@ -43,12 +43,117 @@
       "responseMode": null,
       "streamingMode": null,
       "streamingInterval": 0
+    },
+    {
+      "uuid": "c6e3e9c6-47aa-4c4b-96d7-349e4d132fc8",
+      "type": "http",
+      "documentation": "",
+      "method": "get",
+      "endpoint": "cibil",
+      "responses": [
+        {
+          "uuid": "71fb1873-bd91-4252-bdc7-ab37840475cb",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"score\": 560,\n  \"provider\": \"CIBIL\",\n  \"report_date\": \"2025-10-01\",\n  \"history\": [\n    {\n      \"account_type\": \"credit_card\",\n      \"payment_history\": \"good\",\n      \"balance\": 2500\n    },\n    {\n      \"account_type\": \"auto_loan\",\n      \"payment_history\": \"fair\",\n      \"balance\": 18000\n    }\n  ],\n  \"inquiries\": 3,\n  \"delinquencies\": 1\n}",
+          "latency": 0,
+          "statusCode": 500,
+          "label": "",
+          "headers": [],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
+      "uuid": "9761f288-df10-4a6f-8d41-d0963600ba85",
+      "type": "http",
+      "documentation": "",
+      "method": "get",
+      "endpoint": "experian",
+      "responses": [
+        {
+          "uuid": "70200358-89db-4364-a490-05647150ea28",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"score\": 720,\n  \"provider\": \"Experian\",\n  \"report_date\": \"2025-10-01\",\n  \"history\": [\n    {\n      \"account_type\": \"credit_card\",\n      \"payment_history\": \"excellent\",\n      \"balance\": 1500\n    },\n    {\n      \"account_type\": \"mortgage\",\n      \"payment_history\": \"good\",\n      \"balance\": 250000\n    },\n    {\n      \"account_type\": \"personal_loan\",\n      \"payment_history\": \"good\",\n      \"balance\": 5000\n    }\n  ],\n  \"inquiries\": 2,\n  \"delinquencies\": 0\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "",
+          "headers": [],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
+      "uuid": "a1b2c3d4-5678-90ab-cdef-123456789012",
+      "type": "http",
+      "documentation": "Fetch applicant documents",
+      "method": "get",
+      "endpoint": "documents",
+      "responses": [
+        {
+          "uuid": "b2c3d4e5-6789-01bc-def0-234567890123",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"documents\": [\n    {\n      \"type\": \"government_id\",\n      \"name\": \"drivers_license.pdf\",\n      \"verified\": true,\n      \"url\": \"s3://bucket/docs/drivers_license.pdf\"\n    },\n    {\n      \"type\": \"proof_of_income\",\n      \"name\": \"paystub_recent.pdf\",\n      \"verified\": true,\n      \"url\": \"s3://bucket/docs/paystub_recent.pdf\"\n    },\n    {\n      \"type\": \"proof_of_address\",\n      \"name\": \"utility_bill.pdf\",\n      \"verified\": true,\n      \"url\": \"s3://bucket/docs/utility_bill.pdf\"\n    }\n  ],\n  \"total_documents\": 3,\n  \"verification_status\": \"complete\"\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "",
+          "headers": [],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
     }
   ],
   "rootChildren": [
     {
       "type": "route",
       "uuid": "4fb297d4-2d4f-405e-a779-8220ca3276b3"
+    },
+    {
+      "type": "route",
+      "uuid": "c6e3e9c6-47aa-4c4b-96d7-349e4d132fc8"
+    },
+    {
+      "type": "route",
+      "uuid": "9761f288-df10-4a6f-8d41-d0963600ba85"
+    },
+    {
+      "type": "route",
+      "uuid": "a1b2c3d4-5678-90ab-cdef-123456789012"
     }
   ],
   "proxyMode": false,

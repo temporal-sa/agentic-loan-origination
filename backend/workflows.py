@@ -7,38 +7,104 @@ from typing import Dict, Any, Optional
 
 @workflow.defn
 class SupervisorWorkflow:
+    """
+    Temporal Supervisor Workflow for Loan Underwriting.
+
+    ARCHITECTURE PATTERN - Temporal + Strands Coexistence:
+    ═══════════════════════════════════════════════════════════════
+
+    This workflow demonstrates the value proposition of combining:
+
+    1. TEMPORAL (Orchestration Layer - Outer Loop):
+       - Durable workflow execution (survives crashes, restarts)
+       - Automatic retry policies for transient failures
+       - Provider fallback strategies (CIBIL → Experian)
+       - Human-in-the-loop with signals and queries
+       - Parallel activity execution
+       - Complete audit trail and observability
+       - Time-based operations (timeouts, delays)
+
+    2. STRANDS AGENTS (Intelligence Layer - Inner Loop):
+       - HTTP requests with intelligent error handling
+       - Data validation and quality assessment
+       - Multi-agent collaboration within activities
+       - Structured reasoning and decision-making
+       - Tool usage (http_request etc.)
+       - Context-aware logging and diagnostics
+
+    ═══════════════════════════════════════════════════════════════
+
+    WORKFLOW PHASES:
+    ----------------
+    Phase 1: Data Acquisition (Temporal orchestrates, Strands fetches)
+             - Bank account data (HTTP agent)
+             - Document metadata (HTTP agent)
+             - Credit reports with fallback (HTTP agent + validation)
+
+    Phase 2: Parallel Analysis (Temporal coordinates, Strands analyzes)
+             - Income assessment
+             - Expense assessment
+             - Credit assessment
+
+    Phase 3: Decision Making (Strands agent with LLM)
+             - Aggregate all data
+             - Generate recommendation
+
+    Phase 4: Human Review (Temporal manages state)
+             - Pause workflow
+             - Wait for human signal
+             - Resume with decision
+    """
+
     def __init__(self) -> None:
         """
-        Initializes the workflow instance with default state variables and a global retry policy for activities.
+        Initialize the workflow with state management and retry policies.
 
-        Attributes:
-            _human_decision_received (bool): Flag indicating if a human decision has been received via signal.
-            _human_decision (Optional[Dict[str, Any]]): Stores the human decision data once received.
-            _summary (Optional[Dict[str, Any]]): Stores a summary of the workflow's processing.
-            _final_result (Optional[Dict[str, Any]]): Stores the final result of the workflow.
-            _default_retry_policy (RetryPolicy): Configures exponential backoff retry policy for all activities.
+        State Management:
+            - _human_decision_received: Signal flag for human review completion
+            - _human_decision: Stores the human reviewer's decision
+            - _summary: Aggregated data for human review
+            - _final_result: Complete workflow outcome
 
-        In Temporal, this constructor sets up the workflow's internal state and ensures that all activities
-        executed within the workflow use a consistent retry policy to handle transient failures.
+        Retry Policy:
+            - Exponential backoff with configurable parameters
+            - Applied to all activities by default
+            - Can be overridden per activity (e.g., CIBIL has limited retries)
         """
-        # Event that will be set by the human-review signal
+        # Human-in-the-loop state
         self._human_decision_received = False
         self._human_decision: Optional[Dict[str, Any]] = None
         self._summary: Optional[Dict[str, Any]] = None
         self._final_result: Optional[Dict[str, Any]] = None
 
-        # Global retry policy with exponential backoff for all activities
+        # Global retry policy for activities
+        # This is Temporal's mechanism for handling transient failures
         self._default_retry_policy = RetryPolicy(
-            initial_interval=timedelta(seconds=1), # The time to wait before the first retry attempt after a failure.
-            maximum_interval=timedelta(seconds=10), # The maximum time to wait between retry attempts; the backoff will not exceed this value.
-            backoff_coefficient=2.0, # The multiplier applied to the wait interval after each failed attempt (exponential backoff).
-            maximum_attempts=10 # The maximum number of retry attempts before giving up.
+            initial_interval=timedelta(seconds=1),
+            maximum_interval=timedelta(seconds=10),
+            backoff_coefficient=2.0,
+            maximum_attempts=10
         )
 
     @workflow.run
     async def run(self, application: Dict[str, Any]):
-        # Orchestrate specialist agents
-        # 1. Fetch external data
+        """
+        Main workflow execution logic.
+
+        This method orchestrates the entire loan underwriting process,
+        demonstrating Temporal's orchestration capabilities combined with
+        Strands agents' intelligence within each activity.
+        """
+
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 1: DATA ACQUISITION
+        # ═══════════════════════════════════════════════════════════
+        # Temporal orchestrates the execution and retries
+        # Strands agents handle HTTP requests and data validation
+
+        # Activity 1: Fetch bank account data
+        # - Temporal: Manages timeout, retries, durability
+        # - Strands: Makes HTTP request, validates account structure
         bank = await workflow.execute_activity(
             "fetch_bank_account",
             application["applicant_id"],
@@ -46,6 +112,9 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
+        # Activity 2: Fetch document metadata
+        # - Temporal: Ensures reliable execution
+        # - Strands: Fetches and validates document completeness
         docs = await workflow.execute_activity(
             "fetch_documents",
             application["applicant_id"],
@@ -53,20 +122,24 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
-        # Try CIBIL first, fallback to Experian if it fails
-        # This showcases Temporal's ability to handle provider failures gracefully
+        # Activity 3: Fetch credit report with provider fallback
+        # ════════════════════════════════════════════════════════
+        # KEY ARCHITECTURE PATTERN - FALLBACK ORCHESTRATION:
+        # - Temporal: Orchestrates provider-level fallback (CIBIL → Experian)
+        # - Strands: Validates data quality consistently across providers
+        # ════════════════════════════════════════════════════════
         try:
+            # Try primary provider (CIBIL) with limited retries
             credit = await workflow.execute_activity(
                 "fetch_credit_report_cibil",
                 application["applicant_id"],
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(
-                    maximum_attempts=2  # Don't retry CIBIL, fail fast and fallback
+                    maximum_attempts=2  # Fail fast to try fallback
                 )
             )
-        except ActivityError:
-            # If CIBIL fails, fallback to Experian
-            workflow.logger.info("CIBIL failed, falling back to Experian")
+        except ActivityError as e:
+            # TEMPORAL ORCHESTRATION: Fallback to secondary provider
             credit = await workflow.execute_activity(
                 "fetch_credit_report_experian",
                 application["applicant_id"],
@@ -74,7 +147,13 @@ class SupervisorWorkflow:
                 retry_policy=self._default_retry_policy
             )
 
-        # 2. Run specialist agents in parallel
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 2: PARALLEL SPECIALIST ASSESSMENTS
+        # ═══════════════════════════════════════════════════════════
+        # Temporal coordinates parallel execution
+        # Strands agents perform specialized analysis (future: multi-agent swarms)
+        # TEMPORAL ORCHESTRATION: Launch activities in parallel
+        # These are independent assessments that can run concurrently
         income_task = workflow.execute_activity(
             "income_assessment",
             {"application": application, "bank": bank, "credit": credit},
@@ -94,52 +173,101 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
-        # Wait for all tasks to complete
+        # Wait for all parallel tasks to complete
         income_res = await income_task
         expense_res = await expense_task
         credit_res = await credit_task
 
-        # 3. Make a mock decision using an LLM activity
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 3: DECISION AGGREGATION
+        # ═══════════════════════════════════════════════════════════
+        # Temporal ensures reliable execution
+        # Strands agent (with LLM) synthesizes all data into a recommendation
+
         decision = await workflow.execute_activity(
             "aggregate_and_decide",
-            {"application": application, "income": income_res, "expense": expense_res, "credit": credit_res, "docs": docs},
+            {
+                "application": application,
+                "income": income_res,
+                "expense": expense_res,
+                "credit": credit_res,
+                "docs": docs
+            },
             start_to_close_timeout=timedelta(seconds=1200),
+            retry_policy=self._default_retry_policy
         )
 
-        # 4. Prepare summary for human review and expose via query
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 4: HUMAN-IN-THE-LOOP REVIEW
+        # ═══════════════════════════════════════════════════════════
+        # TEMPORAL'S KEY STRENGTH: Durable wait for human signal
+        # Workflow can pause for hours/days without consuming resources
+
+        # Aggregate all data for human reviewer
         summary = {
             "application": application,
             "bank": bank,
             "docs": docs,
             "credit": credit,
-            "assessments": {"income": income_res, "expense": expense_res, "credit": credit_res},
+            "assessments": {
+                "income": income_res,
+                "expense": expense_res,
+                "credit": credit_res
+            },
             "suggested_decision": decision,
         }
         self._summary = summary
 
-        # Wait for human review signal (approve/reject)
+        # TEMPORAL ORCHESTRATION: Durable wait for human signal
+        # This is where Temporal shines - workflow can pause indefinitely
         await workflow.wait_condition(lambda: self._human_decision_received)
+
+        # Human decision received via signal
         decision = self._human_decision
 
-        # Create final result
-        final = {"summary": summary, "human_decision": decision}
+        # Create final result with all context
+        final = {
+            "summary": summary,
+            "human_decision": decision
+        }
         self._final_result = final
+
         return final
 
     @workflow.signal
     def human_review(self, decision: Dict[str, Any]):
-        """Signal method called by the human reviewer UI to approve/reject.
-        The decision dict might look like: {"action": "approve"|"reject", "note": "..."}
         """
-        # set the decision so run() can continue
+        Signal handler for human review decisions.
+
+        TEMPORAL SIGNAL PATTERN:
+        - Signals allow external systems to communicate with running workflows
+        - Non-blocking: caller returns immediately
+        - Durable: signal is guaranteed to be processed even if workflow is mid-execution
+        - State update: sets flag to resume workflow execution
+
+        Args:
+            decision: Human reviewer's decision
+                     {"action": "approve"|"reject", "note": "..."}
+        """
         self._human_decision = decision
         self._human_decision_received = True
 
     @workflow.query
     def get_summary(self) -> Optional[Dict[str, Any]]:
+        """
+        Query handler to retrieve workflow summary for human review.
+
+        TEMPORAL QUERY PATTERN:
+        - Queries allow synchronous read access to workflow state
+        - Non-blocking: doesn't affect workflow execution
+        - Consistent: always returns current workflow state
+        - Used by UI to display data for review
+
+        Returns:
+            Summary dict with all assessment data, or None if not ready
+        """
         if self._summary is None:
             return None
-        # Ensure all values are JSON serializable
         return {
             "application": self._summary.get("application"),
             "bank": self._summary.get("bank"),
@@ -151,9 +279,14 @@ class SupervisorWorkflow:
 
     @workflow.query
     def get_final_result(self) -> Optional[Dict[str, Any]]:
+        """
+        Query handler to retrieve final workflow result.
+
+        Returns:
+            Final result with summary and human decision, or None if not complete
+        """
         if self._final_result is None:
             return None
-        # Ensure all values are JSON serializable
         return {
             "summary": self._final_result.get("summary"),
             "human_decision": self._final_result.get("human_decision")
