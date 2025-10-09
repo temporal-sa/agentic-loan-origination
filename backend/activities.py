@@ -33,8 +33,6 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
     - Strands agent handles the intelligent data fetching logic
     """
     try:
-        activity.logger.info(f"Fetching bank account for applicant: {applicant_id}")
-
         # Initialize Strands agent for this activity execution
         data_agent = DataFetchAgent()
 
@@ -46,13 +44,11 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
         if "accounts" not in bank_data:
             raise ValueError("Bank API response missing 'accounts' field")
 
-        activity.logger.info(f"Successfully retrieved {len(bank_data.get('accounts', []))} bank accounts")
         return bank_data
 
     except Exception as e:
         # Raise ApplicationError to trigger Temporal's retry mechanism
         # Temporal will retry this activity based on the workflow's retry policy
-        activity.logger.error(f"Bank account fetch failed: {str(e)}")
         raise ApplicationError(
             f"Failed to fetch bank account data: {str(e)}",
             type="BankAPIError",
@@ -73,8 +69,6 @@ async def fetch_documents(applicant_id: str) -> Dict[str, Any]:
     The agent could validate document types, check file sizes, verify formats, etc.
     """
     try:
-        activity.logger.info(f"Fetching documents for applicant: {applicant_id}")
-
         # Initialize Strands agent for document fetching
         data_agent = DataFetchAgent()
 
@@ -92,7 +86,6 @@ async def fetch_documents(applicant_id: str) -> Dict[str, Any]:
         return documents_data
 
     except Exception as e:
-        activity.logger.error(f"Document fetch failed: {str(e)}")
         raise ApplicationError(
             f"Failed to fetch documents: {str(e)}",
             type="DocumentAPIError",
