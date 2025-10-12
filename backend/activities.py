@@ -210,7 +210,7 @@ async def aggregate_and_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
             "expense": payload.get("expense"),
             "credit": payload.get("credit"),
         }
-        text = f"Summarize and give a suggested decision for this loan: {prompt_data}"
+        text = f"You are a smart loan underwriting analyst. You have to understand all data, reason step by step and provide decision. Summarize and give a suggested decision for this loan: {prompt_data}"
         agent_response = agent(text)
         explanation = str(agent_response) if agent_response is not None else "No response from agent"
         llm_error = False

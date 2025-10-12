@@ -116,7 +116,7 @@
           "callbacks": []
         }
       ],
-      "responseMode": null,
+      "responseMode": "RANDOM",
       "streamingMode": null,
       "streamingInterval": 0
     },
@@ -129,7 +129,7 @@
       "responses": [
         {
           "uuid": "71fb1873-bd91-4252-bdc7-ab37840475cb",
-          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"score\": 860,\n  \"provider\": \"CIBIL\",\n  \"report_date\": \"2025-10-01\",\n  \"history\": [\n    {\n      \"account_type\": \"credit_card\",\n      \"payment_history\": \"good\",\n      \"balance\": 2500\n    },\n    {\n      \"account_type\": \"auto_loan\",\n      \"payment_history\": \"fair\",\n      \"balance\": 18000\n    }\n  ],\n  \"inquiries\": 3,\n  \"delinquencies\": 1\n}",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"score\": 700,\n  \"provider\": \"CIBIL\",\n  \"report_date\": \"2025-10-01\",\n  \"history\": [\n    {\n      \"account_type\": \"credit_card\",\n      \"payment_history\": \"good\",\n      \"balance\": 2500\n    },\n    {\n      \"account_type\": \"auto_loan\",\n      \"payment_history\": \"fair\",\n      \"balance\": 18000\n    }\n  ],\n  \"inquiries\": 3,\n  \"delinquencies\": 1\n}",
           "latency": 0,
           "statusCode": 200,
           "label": "",
@@ -169,7 +169,7 @@
           "uuid": "f0d411cb-6df1-4334-8062-469f79ae6d4a",
           "body": "{\n  error:\"Rate limited\"\n}",
           "latency": 0,
-          "statusCode": 200,
+          "statusCode": 429,
           "label": "",
           "headers": [],
           "bodyType": "INLINE",
@@ -188,7 +188,7 @@
           "uuid": "f59c94c7-fccc-42a5-8eb1-2c8ea93f4168",
           "body": "{\n  error:\"Rate limited\"\n}",
           "latency": 0,
-          "statusCode": 200,
+          "statusCode": 429,
           "label": "",
           "headers": [],
           "bodyType": "INLINE",
@@ -207,7 +207,7 @@
           "uuid": "16ec7c71-f36c-4e1c-91ca-4400d10864d0",
           "body": "{\n  error:\"Rate limited\"\n}",
           "latency": 0,
-          "statusCode": 200,
+          "statusCode": 500,
           "label": "",
           "headers": [],
           "bodyType": "INLINE",
@@ -349,7 +349,7 @@
           "callbacks": []
         }
       ],
-      "responseMode": null,
+      "responseMode": "RANDOM",
       "streamingMode": null,
       "streamingInterval": 0
     },
