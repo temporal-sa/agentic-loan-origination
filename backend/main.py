@@ -4,6 +4,7 @@ from strands import Agent
 from strands.models.ollama import OllamaModel
 from temporalio.client import Client
 import os
+from . import model
 from dotenv import load_dotenv
 from typing import Optional
 
@@ -14,13 +15,8 @@ app = FastAPI()
 TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
 TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "loan-underwriter-queue")
 
-# Initialize Strands Agent with Ollama model
 try:
-    ollama_model = OllamaModel(
-        host=os.getenv("OLLAMA_URL", "http://127.0.0.1:11434"),
-        model_id=os.getenv("OLLAMA_MODEL", "llama3.2:1b")  # Use faster model
-    )
-    strands_agent = Agent(model=ollama_model)
+    strands_agent = Agent(model=model.get_model())
     strands_enabled = True
     print("Strands Agent initialized successfully")
 except Exception as e:

@@ -2,6 +2,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from typing import Dict, Any
 import os
+import model
 from strands import Agent
 from strands.models.ollama import OllamaModel
 from classes.agents import DataFetchAgent, CreditReportAgent
@@ -196,13 +197,8 @@ async def credit_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @activity.defn
 async def aggregate_and_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
-    # Initialize Ollama model with Strands
     try:
-        ollama_model = OllamaModel(
-            host=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-            model_id=os.getenv("OLLAMA_MODEL", "llama3:latest")
-        )
-        agent = Agent(model=ollama_model)
+        agent = Agent(model=model.get_model())
 
         prompt_data = {
             "application": payload.get("application"),

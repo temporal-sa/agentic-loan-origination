@@ -9,10 +9,10 @@ This repository demonstrates an agentic loan underwriting system built with Temp
   - `DataFetchAgent`: Generic HTTP data fetching with validation
   - `CreditReportAgent`: Specialized credit report validation with multi-provider support
 - **Specialist Activities**: Mock data fetching (bank, documents, credit) and AI-powered assessments (income, expense, credit analysis)
-- **Strands Integration**: Agent orchestration with structured output validation using Ollama models
+- **Strands Integration**: Agent orchestration with structured output validation using Ollama or AWS Bedrock models
 - **Provider Fallback**: Temporal-orchestrated fallback from CIBIL to Experian for credit reports
 - **Streamlit UI**: User interface for loan submission and underwriter review workflow
-- **Environment Configuration**: Configurable Ollama and Temporal settings via `.env` file
+- **Environment Configuration**: Configurable LLM settings (Ollama/AWS Bedrock) and Temporal settings via `.env` file
 
 ## Sequence diagram
 The diagram below shows the end-to-end flow: user submits via Streamlit, Streamlit calls FastAPI which starts a Temporal workflow. A worker executes activities (mock APIs and specialist agents), the workflow calls Ollama for a summary/decision, then the system awaits a human-review signal. The underwriter approves/rejects via the UI which signals the running workflow.
@@ -28,7 +28,7 @@ sequenceDiagram
 	participant DataAgent as DataFetchAgent
 	participant CreditAgent as CreditReportAgent
 	participant Mockoon as Mock APIs
-	participant Ollama as Ollama (LLM)
+	participant LLM as LLM Provider (Ollama/Bedrock)
 
 	User->>Streamlit: Submit loan application
 	Streamlit->>FastAPI: POST /submit (application data)
@@ -62,11 +62,11 @@ sequenceDiagram
 	Note over Worker, Supervisor: PHASE 2: Parallel Specialist Assessments
 	par Income Assessment
 		Worker->>Worker: income_assessment(app, bank, credit)
-		Note over Worker: Heuristic: income/amount ratio > 2
+		Note over Worker: Heuristic: income/amount ratio 
 		Worker->>Worker: income_ok + income value
 	and Expense Assessment
 		Worker->>Worker: expense_assessment(app, bank)
-		Note over Worker: Heuristic: disposable income check
+		Note over Worker:  Heuristic: disposable income check
 		Worker->>Worker: affordability_ok + expenses
 	and Credit Assessment
 		Worker->>Worker: credit_assessment(app, credit)
@@ -75,9 +75,15 @@ sequenceDiagram
 	end
 
 	Note over Worker, Supervisor: PHASE 3: Decision Aggregation with LLM
-	Worker->>Ollama: aggregate_and_decide(all data)
-	Note over Ollama: Strands Agent + Ollama Model
-	Ollama-->>Worker: AI summary + recommendation
+	alt Ollama Configuration
+		Worker->>LLM: aggregate_and_decide(all data)
+		Note over LLM: Strands Agent + Ollama Model
+		LLM-->>Worker: AI summary + recommendation
+	else AWS Bedrock Configuration
+		Worker->>LLM: aggregate_and_decide(all data)
+		Note over LLM: Strands Agent + Claude Model
+		LLM-->>Worker: AI summary + recommendation
+	end
 	Worker-->>Supervisor: Store summary with suggested decision
 
 	Note over Supervisor: PHASE 4: Human-in-the-Loop Review
@@ -111,7 +117,9 @@ sequenceDiagram
 
 ## Prerequisites
 - **Temporal Server**: Running locally (default at localhost:7233)
-- **Ollama**: Local installation with model (default: `llama3.2:1b`, configurable via `.env`)
+- **LLM Provider** (one of the following):
+  - **Ollama**: Local installation with model (default: `llama3:latest`, configurable via `.env`)
+  - **AWS Bedrock**: Access to AWS Bedrock service with API key and supported models (e.g., `au.anthropic.claude-sonnet-4-5-20250929-v1:0`)
 - **Mockoon**: Mock API server running on port 3233 (configuration available in `mockoon` folder)
 - **Python 3.9+**: Required for all dependencies
 - **Dependencies**: Install from `requirements.txt`
@@ -130,7 +138,18 @@ pip install -r requirements.txt
 2. **Configure environment variables:**
 ```bash
 cp .env.example .env
-# Edit .env to customize Ollama URL, model, and Temporal settings
+# Edit .env to configure LLM provider and settings:
+
+# For Ollama:
+MODEL_PROVIDER=ollama
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=llama3:latest
+
+# For AWS Bedrock:
+MODEL_PROVIDER=aws-bedrock
+AWS_BEARER_TOKEN_BEDROCK=<your-api-key>
+AWS_REGION=<your-region>  # e.g., ap-southeast-2
+AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1:0
 ```
 
 3. **Start required services:**
@@ -192,7 +211,7 @@ cp .env.example .env
   - Temporal activities handle durable execution and retry logic (outer loop)
   - Strands agents handle intelligent data fetching and validation (inner loop)
 - **Provider Fallback Pattern**: Temporal workflow orchestrates CIBIL → Experian fallback for credit reports
-- **Configurable LLM**: Ollama model selection via environment variables (default: `llama3.2:1b`)
+- **Configurable LLM**: Support for both Ollama (local) and AWS Bedrock (cloud) models via environment variables
 - **Production Considerations**: Would require secure API integrations, authentication, and real data providers
 - **Human-in-the-Loop**: Workflow supports binary approve/reject decisions with AI-generated explanations
 
@@ -209,7 +228,7 @@ We welcome contributions to improve this demo! Here's how you can help:
 6. Open a Pull Request with a clear description of your changes
 
 ### Contribution Ideas
-- **Enhanced AI Models**: Integration with other LLM providers (OpenAI, Anthropic, etc.)
+- **Enhanced AI Models**: Integration with other LLM providers (OpenAI, Azure OpenAI, etc.)
 - **Real Integrations**: Replace mock activities with actual bank/credit APIs
 - **UI Improvements**: Enhanced Streamlit interface or alternative frontend
 - **Security Features**: Authentication, authorization, and data encryption
