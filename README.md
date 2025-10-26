@@ -5,6 +5,8 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 ## Architecture
 - **FastAPI Backend**: REST API with endpoints for loan submission, workflow status checking, and human review
 - **Temporal Workflows**: SupervisorWorkflow orchestrates the entire loan processing pipeline with durable execution
+  - Supports both **local Temporal** (default) and **Temporal Cloud** with API key authentication
+  - Automatic connection detection based on environment variables
 - **Strands HTTP Agents**: Reusable agent classes for intelligent data fetching with error handling and validation
   - `DataFetchAgent`: Generic HTTP data fetching with validation
   - `CreditReportAgent`: Specialized credit report validation with multi-provider support
@@ -12,7 +14,7 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 - **Strands Integration**: Agent orchestration with structured output validation using Ollama or AWS Bedrock models
 - **Provider Fallback**: Temporal-orchestrated fallback from CIBIL to Experian for credit reports
 - **Streamlit UI**: User interface for loan submission and underwriter review workflow
-- **Environment Configuration**: Configurable LLM settings (Ollama/AWS Bedrock) and Temporal settings via `.env` file
+- **Environment Configuration**: Configurable LLM settings (Ollama/AWS Bedrock) and Temporal settings (Local/Cloud) via `.env` file
 
 ## Sequence diagram
 The diagram below shows the end-to-end flow: user submits via Streamlit, Streamlit calls FastAPI which starts a Temporal workflow. A worker executes activities (mock APIs and specialist agents), the workflow calls Ollama for a summary/decision, then the system awaits a human-review signal. The underwriter approves/rejects via the UI which signals the running workflow.
@@ -116,7 +118,9 @@ sequenceDiagram
 ```
 
 ## Prerequisites
-- **Temporal Server**: Running locally (default at localhost:7233)
+- **Temporal Server** (choose one):
+  - **Local Temporal** (default): Running locally at localhost:7233
+  - **Temporal Cloud**: Account with API key for cloud-hosted Temporal
 - **LLM Provider** (one of the following):
   - **Ollama**: Local installation with model (default: `llama3:latest`, configurable via `.env`)
   - **AWS Bedrock**: Access to AWS Bedrock service with API key and supported models (e.g., `au.anthropic.claude-sonnet-4-5-20250929-v1:0`)
@@ -138,14 +142,25 @@ pip install -r requirements.txt
 2. **Configure environment variables:**
 ```bash
 cp .env.example .env
-# Edit .env to configure LLM provider and settings:
+# Edit .env to configure Temporal and LLM provider settings:
 
-# For Ollama:
+# Temporal Configuration:
+# For Local (default):
+TEMPORAL_ADDRESS=localhost:7233
+TEMPORAL_NAMESPACE=default
+TEMPORAL_TASK_QUEUE=loan-underwriter-queue
+
+# For Temporal Cloud (just add API key and update address/namespace):
+# TEMPORAL_API_KEY=your-api-key-here
+# TEMPORAL_ADDRESS=your-namespace.account-id.tmprl.cloud:7233
+# TEMPORAL_NAMESPACE=your-namespace.account-id
+
+# LLM Configuration - For Ollama:
 MODEL_PROVIDER=ollama
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=llama3:latest
 
-# For AWS Bedrock:
+# OR for AWS Bedrock:
 MODEL_PROVIDER=aws-bedrock
 AWS_BEARER_TOKEN_BEDROCK=<your-api-key>
 AWS_REGION=<your-region>  # e.g., ap-southeast-2
@@ -153,8 +168,16 @@ AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1
 ```
 
 3. **Start required services:**
-   - Start Temporal server (see [Temporal docs](https://docs.temporal.io/dev-guide/))
-   - Start Ollama with your preferred model (e.g., `ollama run llama3.2:1b`)
+
+   **Temporal Server** (choose one):
+   - **Local Temporal (default)**: Start local Temporal server (see [Temporal docs](https://docs.temporal.io/dev-guide/))
+   - **Temporal Cloud**: Configure API key in `.env` - no local server needed
+
+   **LLM Provider** (choose one):
+   - **Ollama**: Start Ollama with your preferred model (e.g., `ollama run llama3.2:1b`)
+   - **AWS Bedrock**: Configure API key in `.env` - no local service needed
+
+   **Mock APIs**:
    - Start Mockoon with the configuration from the `mockoon` folder (import the JSON config file into Mockoon and start the mock API on port 3233)
 
 4. **Launch the application:**
@@ -178,6 +201,47 @@ AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1
    - Streamlit UI: http://localhost:8501
    - FastAPI docs: http://localhost:8000/docs
 
+## Temporal Cloud Configuration
+
+The application supports both local Temporal and Temporal Cloud deployments. By default, it connects to a local Temporal server.
+
+### Switching to Temporal Cloud
+
+To use Temporal Cloud instead of a local server:
+
+1. **Obtain Temporal Cloud credentials:**
+   - Sign up for [Temporal Cloud](https://temporal.io/cloud)
+   - Create a namespace (e.g., `my-namespace.account-id`)
+   - Generate an API key from the Temporal Cloud console
+
+2. **Update your `.env` file:**
+   ```bash
+   # Update the address and namespace for your Temporal Cloud instance
+   TEMPORAL_ADDRESS=my-namespace.account-id.tmprl.cloud:7233
+   TEMPORAL_NAMESPACE=my-namespace.account-id
+   TEMPORAL_TASK_QUEUE=loan-underwriter-queue
+
+   # Add your API key
+   TEMPORAL_API_KEY=your-actual-api-key-here
+   ```
+
+3. **Connection Detection:**
+   - The application uses the same `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE` for both local and cloud
+   - If `TEMPORAL_API_KEY` is set, it automatically enables TLS and API key authentication for cloud
+   - If `TEMPORAL_API_KEY` is not set, it connects to local Temporal without authentication
+
+4. **Restart your services:**
+   - Stop any running worker and FastAPI processes
+   - Start them again - they will automatically connect to Temporal Cloud
+
+### Temporal Cloud Benefits
+
+- **Zero infrastructure management**: No need to run local Temporal server
+- **High availability**: Built-in redundancy and failover
+- **Scalability**: Auto-scaling workers and workflow capacity
+- **Security**: TLS encryption and API key authentication
+- **Monitoring**: Built-in observability and metrics
+
 ## Key Features
 - **Structured Data Validation**: Strands integration provides automatic validation of loan applications
 - **Mock Data Services**: Simulated bank account, document, and credit report fetching
@@ -193,10 +257,12 @@ AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1
 │   ├── workflows.py                         # Temporal SupervisorWorkflow definition
 │   ├── activities.py                        # Temporal activities (data fetching & AI assessments)
 │   ├── worker.py                            # Temporal worker process
-│   └── classes/
-│       └── agents/
-│           ├── data_fetch_agent.py          # Strands agent for HTTP data fetching
-│           └── credit_report_agent.py       # Strands agent for credit report validation
+│   ├── classes/
+│   │   └── agents/
+│   │       ├── data_fetch_agent.py          # Strands agent for HTTP data fetching
+│   │       └── credit_report_agent.py       # Strands agent for credit report validation
+│   └── utilities/
+│       └── temporal_client.py               # Temporal connection utility (local/cloud)
 ├── ui/
 │   └── streamlit_app.py                     # Streamlit user interface
 ├── mockoon/                                 # Mock API configuration for local development

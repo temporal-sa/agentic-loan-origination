@@ -1,12 +1,13 @@
 import asyncio
 import os
 import sys
-from temporalio import worker, client
+from temporalio import worker
 from dotenv import load_dotenv
 
 # Import the actual workflows and activities
 from workflows import SupervisorWorkflow
 import activities
+from utilities import get_temporal_client
 
 load_dotenv()
 
@@ -14,11 +15,8 @@ TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "loan-underwriter-queue")
 
 
 async def run_worker():
-    # Create client with explicit configuration
-    temporal_client = await client.Client.connect(
-        "localhost:7233",
-        # Add any additional client configuration if needed
-    )
+    # Create client using connection utility (supports both local and cloud)
+    temporal_client = await get_temporal_client()
 
     # Create and run worker
     w = worker.Worker(
