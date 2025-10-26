@@ -2,9 +2,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.ollama import OllamaModel
-from temporalio.client import Client
 import os
 from . import model
+from .utilities import get_temporal_client
 from dotenv import load_dotenv
 from typing import Optional
 
@@ -12,7 +12,6 @@ load_dotenv()
 
 app = FastAPI()
 
-TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
 TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "loan-underwriter-queue")
 
 try:
@@ -53,7 +52,7 @@ async def submit_application(app_data: dict):
             validated_data = LoanApplication(**app_data)
             print(f"Received application (direct): {validated_data}")
 
-        client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+        client = await get_temporal_client()
         print("Connected to Temporal")
 
         handle = await client.start_workflow(
@@ -73,7 +72,7 @@ async def submit_application(app_data: dict):
 
 @app.get("/status/{workflow_id}")
 async def status(workflow_id: str):
-    client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+    client = await get_temporal_client()
     try:
         wf = client.get_workflow_handle(workflow_id)
 
@@ -104,7 +103,7 @@ async def status(workflow_id: str):
 
 @app.get("/workflow/{workflow_id}/summary")
 async def get_summary(workflow_id: str):
-    client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+    client = await get_temporal_client()
     try:
         wf = client.get_workflow_handle(workflow_id)
         # call query - make sure query name matches the method name
@@ -145,7 +144,7 @@ async def human_review(workflow_id: str, review: dict):
             validated_review = ReviewRequest(**review)
             print(f"Review validated (direct): {validated_review}")
 
-        client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+        client = await get_temporal_client()
         wf = client.get_workflow_handle(workflow_id)
         # send signal
         await wf.signal("human_review", validated_review.model_dump())
@@ -156,7 +155,7 @@ async def human_review(workflow_id: str, review: dict):
 
 @app.get("/workflow/{workflow_id}/final")
 async def get_final_result(workflow_id: str):
-    client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+    client = await get_temporal_client()
     try:
         wf = client.get_workflow_handle(workflow_id)
         final = await wf.query("get_final_result")
@@ -174,7 +173,7 @@ async def get_final_result(workflow_id: str):
 @app.get("/workflows")
 async def list_workflows():
     """List all loan workflows with their status, summary, and metadata."""
-    client = await Client.connect("localhost:7233", namespace=TEMPORAL_NAMESPACE)
+    client = await get_temporal_client()
     try:
         workflows_list = []
 
