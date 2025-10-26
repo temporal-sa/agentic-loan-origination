@@ -194,7 +194,9 @@ class SupervisorWorkflow:
                 "docs": docs
             },
             start_to_close_timeout=timedelta(seconds=1200),
-            retry_policy=self._default_retry_policy
+            retry_policy=RetryPolicy(
+                maximum_interval=timedelta(seconds=10)
+            )
         )
 
         # ═══════════════════════════════════════════════════════════
