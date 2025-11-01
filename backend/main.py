@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.ollama import OllamaModel
 import os
-from . import model
+from .utilities import model
 from .utilities import get_temporal_client
 from dotenv import load_dotenv
 from typing import Optional

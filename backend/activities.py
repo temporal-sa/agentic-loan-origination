@@ -2,7 +2,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from typing import Dict, Any
 import os
-import model
+from utilities import model
 from strands import Agent
 from strands.models.ollama import OllamaModel
 from classes.agents import DataFetchAgent, CreditReportAgent
