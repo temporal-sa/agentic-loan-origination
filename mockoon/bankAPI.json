@@ -129,7 +129,7 @@
       "responses": [
         {
           "uuid": "71fb1873-bd91-4252-bdc7-ab37840475cb",
-          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"score\": 700,\n  \"provider\": \"CIBIL\",\n  \"report_date\": \"2025-10-01\",\n  \"history\": [\n    {\n      \"account_type\": \"credit_card\",\n      \"payment_history\": \"good\",\n      \"balance\": 2500\n    },\n    {\n      \"account_type\": \"auto_loan\",\n      \"payment_history\": \"fair\",\n      \"balance\": 18000\n    }\n  ],\n  \"inquiries\": 3,\n  \"delinquencies\": 1\n}",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"score\": 680,\n  \"provider\": \"CIBIL\",\n  \"report_date\": \"2025-10-01\",\n  \"history\": [\n    {\n      \"account_type\": \"credit_card\",\n      \"payment_history\": \"good\",\n      \"balance\": 2500\n    },\n    {\n      \"account_type\": \"auto_loan\",\n      \"payment_history\": \"fair\",\n      \"balance\": 18000\n    }\n  ],\n  \"inquiries\": 3,\n  \"delinquencies\": 1\n}",
           "latency": 0,
           "statusCode": 200,
           "label": "",
