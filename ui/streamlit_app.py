@@ -18,29 +18,67 @@ tab = st.tabs(["Submit", "Review", "Workflows"])
 
 with tab[0]:
     with st.form("submit_form"):
+        st.subheader("Basic Information")
         applicant_id = st.text_input("Applicant ID", "12345")
         name = st.text_input("Name", "Darshit")
         amount = st.number_input("Loan amount", value=5000.0)
         income = st.number_input("Declared income", value=6000.0)
         expenses = st.number_input("Monthly expenses", value=2000.0)
-        submitted = st.form_submit_button("Submit")
+
+        st.markdown("---")
+        st.subheader("Document Uploads")
+        st.markdown("*Upload supporting documents for verification (images: JPG, PNG, or PDF)*")
+
+        bank_statement = st.file_uploader("Bank Statement (required)", type=["jpg", "jpeg", "png", "pdf"], key="bank_statement")
+        proof_of_id = st.file_uploader("Proof of ID (required)", type=["jpg", "jpeg", "png", "pdf"], key="proof_of_id")
+        proof_of_income = st.file_uploader("Proof of Income (required)", type=["jpg", "jpeg", "png", "pdf"], key="proof_of_income")
+        proof_of_address = st.file_uploader("Proof of Address (required)", type=["jpg", "jpeg", "png", "pdf"], key="proof_of_address")
+
+        submitted = st.form_submit_button("Submit Application")
 
     if submitted:
-        payload = {
-            "applicant_id": applicant_id,
-            "name": name,
-            "amount": amount,
-            "income": income,
-            "expenses": expenses,
-        }
-        try:
-            r = requests.post(f"{API_URL}/submit", json=payload, timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            st.success("Workflow started")
-            st.json(data)
-        except Exception as e:
-            st.error(f"Failed to start workflow: {e}")
+        # Validate that all required documents are uploaded
+        if not all([bank_statement, proof_of_id, proof_of_income, proof_of_address]):
+            st.error("Please upload all required documents before submitting.")
+        else:
+            # First, create the workflow and get the workflow_id
+            payload = {
+                "applicant_id": applicant_id,
+                "name": name,
+                "amount": amount,
+                "income": income,
+                "expenses": expenses,
+            }
+
+            try:
+                # Step 1: Submit the application to get workflow_id (format: "loan-{applicant_id}")
+                r = requests.post(f"{API_URL}/submit", json=payload, timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                workflow_id = data["workflow_id"]  # This is "loan-{applicant_id}"
+
+                # Step 2: Upload documents using the workflow_id to associate them with this applicant's workflow
+                files = {
+                    "bank_statement": ("bank_statement" + bank_statement.name[bank_statement.name.rfind('.'):], bank_statement, bank_statement.type),
+                    "proof_of_id": ("proof_of_id" + proof_of_id.name[proof_of_id.name.rfind('.'):], proof_of_id, proof_of_id.type),
+                    "proof_of_income": ("proof_of_income" + proof_of_income.name[proof_of_income.name.rfind('.'):], proof_of_income, proof_of_income.type),
+                    "proof_of_address": ("proof_of_address" + proof_of_address.name[proof_of_address.name.rfind('.'):], proof_of_address, proof_of_address.type),
+                }
+
+                upload_response = requests.post(
+                    f"{API_URL}/upload/{workflow_id}",
+                    files=files,
+                    timeout=30
+                )
+                upload_response.raise_for_status()
+                upload_data = upload_response.json()
+
+                st.success("Workflow started and documents uploaded successfully!")
+                st.json(data)
+                st.info(f"Documents saved: {upload_data.get('message', '')}")
+
+            except Exception as e:
+                st.error(f"Failed to submit application: {e}")
 
 
 with tab[1]:

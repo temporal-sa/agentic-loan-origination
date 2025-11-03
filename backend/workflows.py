@@ -65,6 +65,8 @@ class SupervisorWorkflow:
             - _human_decision: Stores the human reviewer's decision
             - _summary: Aggregated data for human review
             - _final_result: Complete workflow outcome
+            - _document_paths: Paths to uploaded documents
+            - _documents_uploaded: Flag indicating documents have been uploaded
 
         Retry Policy:
             - Exponential backoff with configurable parameters
@@ -76,6 +78,10 @@ class SupervisorWorkflow:
         self._human_decision: Optional[Dict[str, Any]] = None
         self._summary: Optional[Dict[str, Any]] = None
         self._final_result: Optional[Dict[str, Any]] = None
+
+        # Document upload state
+        self._document_paths: Optional[Dict[str, str]] = None
+        self._documents_uploaded = False
 
         # Global retry policy for activities
         # This is Temporal's mechanism for handling transient failures
@@ -97,6 +103,17 @@ class SupervisorWorkflow:
         """
 
         # ═══════════════════════════════════════════════════════════
+        # PHASE 0: WAIT FOR DOCUMENT UPLOAD
+        # ═══════════════════════════════════════════════════════════
+        # Wait for documents to be uploaded before proceeding
+        workflow.logger.info("Waiting for documents to be uploaded...")
+        await workflow.wait_condition(lambda: self._documents_uploaded, timeout=timedelta(minutes=10))
+        workflow.logger.info(f"Documents uploaded: {self._document_paths}")
+
+        # Add document paths to application data for activities
+        application["document_paths"] = self._document_paths
+
+        # ═══════════════════════════════════════════════════════════
         # PHASE 1: DATA ACQUISITION
         # ═══════════════════════════════════════════════════════════
         # Temporal orchestrates the execution and retries
@@ -112,13 +129,14 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
-        # Activity 2: Fetch document metadata
-        # - Temporal: Ensures reliable execution
-        # - Strands: Fetches and validates document completeness
+        # Activity 2: Process documents with Bedrock Data Automation
+        # - Temporal: Ensures reliable execution with retries
+        # - Bedrock Data Automation: Extracts structured data from uploaded documents
+        # - Saves JSON metadata for downstream activities
         docs = await workflow.execute_activity(
             "fetch_documents",
-            application["applicant_id"],
-            start_to_close_timeout=timedelta(seconds=60),
+            application,  # Pass full application with document_paths
+            start_to_close_timeout=timedelta(minutes=15),  # OCR processing can take time
             retry_policy=self._default_retry_policy
         )
 
@@ -151,13 +169,13 @@ class SupervisorWorkflow:
         # PHASE 2: PARALLEL SPECIALIST ASSESSMENTS
         # ═══════════════════════════════════════════════════════════
         # Temporal coordinates parallel execution
-        # Strands agents perform specialized analysis (future: multi-agent swarms)
+        # AgentCore Code Interpreter performs sophisticated financial analysis
         # TEMPORAL ORCHESTRATION: Launch activities in parallel
         # These are independent assessments that can run concurrently
         income_task = workflow.execute_activity(
             "income_assessment",
-            {"application": application, "bank": bank, "credit": credit},
-            start_to_close_timeout=timedelta(seconds=90),
+            {"application": application, "bank": bank, "credit": credit, "documents": docs},
+            start_to_close_timeout=timedelta(minutes=5),  # AgentCore needs more time
             retry_policy=self._default_retry_policy
         )
         expense_task = workflow.execute_activity(
@@ -235,6 +253,24 @@ class SupervisorWorkflow:
         self._final_result = final
 
         return final
+
+    @workflow.signal
+    def documents_uploaded(self, data: Dict[str, Any]):
+        """
+        Signal handler for document upload completion.
+
+        TEMPORAL SIGNAL PATTERN:
+        - Signals allow external systems to communicate with running workflows
+        - Document paths are provided after files are uploaded to backend/uploads/
+        - Workflow resumes processing once documents are available
+
+        Args:
+            data: Document upload information
+                  {"document_paths": {...}}
+        """
+        self._document_paths = data.get("document_paths")
+        self._documents_uploaded = True
+        workflow.logger.info(f"Received document paths via signal: {self._document_paths}")
 
     @workflow.signal
     def human_review(self, decision: Dict[str, Any]):

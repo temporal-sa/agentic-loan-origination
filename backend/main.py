@@ -1,12 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from strands import Agent
 from strands.models.ollama import OllamaModel
 import os
+from pathlib import Path
 from .utilities import model
 from .utilities import get_temporal_client
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, List
+import shutil
 
 load_dotenv()
 
@@ -31,6 +33,7 @@ class LoanApplication(BaseModel):
     amount: float = Field(description="Requested loan amount")
     income: Optional[float] = Field(default=None, description="Monthly income of the applicant")
     expenses: Optional[float] = Field(default=None, description="Monthly expenses of the applicant")
+    document_paths: Optional[dict] = Field(default=None, description="Paths to uploaded documents (bank_statement, proof_of_id, proof_of_income, proof_of_address)")
 
 
 @app.post("/submit")
@@ -68,6 +71,75 @@ async def submit_application(app_data: dict):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/upload/{workflow_id}")
+async def upload_documents(
+    workflow_id: str,
+    bank_statement: UploadFile = File(...),
+    proof_of_id: UploadFile = File(...),
+    proof_of_income: UploadFile = File(...),
+    proof_of_address: UploadFile = File(...)
+):
+    """
+    Upload documents for a loan application workflow.
+    Creates a directory structure: backend/uploads/{workflow_id}/
+    """
+    try:
+        # Get the backend directory path
+        backend_dir = Path(__file__).parent
+        uploads_dir = backend_dir / "uploads" / workflow_id
+
+        # Create directory if it doesn't exist
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        # Dictionary to track uploaded files
+        uploaded_files = {}
+
+        # Upload each document
+        documents = {
+            "bank_statement": bank_statement,
+            "proof_of_id": proof_of_id,
+            "proof_of_income": proof_of_income,
+            "proof_of_address": proof_of_address
+        }
+
+        for doc_type, file in documents.items():
+            if file:
+                # Get file extension
+                file_extension = Path(file.filename).suffix
+                # Create standardized filename
+                file_path = uploads_dir / f"{doc_type}{file_extension}"
+
+                # Save file
+                with open(file_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+
+                uploaded_files[doc_type] = str(file_path)
+                print(f"Saved {doc_type} to {file_path}")
+
+        # Signal the workflow with document paths so it can use them in activities
+        try:
+            client = await get_temporal_client()
+            wf = client.get_workflow_handle(workflow_id)
+            await wf.signal("documents_uploaded", {"document_paths": uploaded_files})
+            print(f"Signaled workflow {workflow_id} with document paths")
+        except Exception as signal_error:
+            print(f"Warning: Could not signal workflow with document paths: {signal_error}")
+            # Don't fail the upload if signaling fails
+
+        return {
+            "workflow_id": workflow_id,
+            "message": "Documents uploaded successfully",
+            "uploaded_files": uploaded_files,
+            "upload_directory": str(uploads_dir)
+        }
+
+    except Exception as e:
+        print(f"Error uploading documents: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to upload documents: {str(e)}")
 
 
 @app.get("/status/{workflow_id}")
