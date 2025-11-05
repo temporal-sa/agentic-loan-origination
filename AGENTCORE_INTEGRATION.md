@@ -10,13 +10,13 @@ This document describes the integration of **AWS Bedrock AgentCore** and **Bedro
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    USER SUBMITS APPLICATION                      │
-│                 (Streamlit UI with Document Uploads)             │
+│                    USER SUBMITS APPLICATION                     │
+│                 (Streamlit UI with Document Uploads)            │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                  TEMPORAL WORKFLOW STARTED                       │
+│                  TEMPORAL WORKFLOW STARTED                      │
 │                  (SupervisorWorkflow)                           │
 └────────────────────────────┬────────────────────────────────────┘
                              │
@@ -56,13 +56,13 @@ This document describes the integration of **AWS Bedrock AgentCore** and **Bedro
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              AGGREGATE & DECIDE (LLM Synthesis)                  │
+│              AGGREGATE & DECIDE (LLM Synthesis)                 │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                   HUMAN REVIEW (Streamlit UI)                    │
-│                    - Approve / Reject                            │
+│                   HUMAN REVIEW (Streamlit UI)                   │
+│                    - Approve / Reject                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
