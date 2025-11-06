@@ -7,10 +7,20 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 - **Temporal Workflows**: SupervisorWorkflow orchestrates the entire loan processing pipeline with durable execution
   - Supports both **local Temporal** (default) and **Temporal Cloud** with API key authentication
   - Automatic connection detection based on environment variables
+  - **Async Activity Completion Pattern**: Document processing loop in workflow (not activity) with durable timer sleep
 - **Strands HTTP Agents**: Reusable agent classes for intelligent data fetching with error handling and validation
   - `DataFetchAgent`: Generic HTTP data fetching with validation
   - `CreditReportAgent`: Specialized credit report validation with multi-provider support
 - **Specialist Activities**: Mock data fetching (bank, documents, credit) and AI-powered assessments (income, expense, credit analysis)
+  - `trigger_document_processing`: Initiates async Bedrock Data Automation (BDA) processing per document
+  - `check_document_status`: Polls BDA status without blocking
+- **AWS Bedrock Data Automation**: Extracts structured data from documents (bank statements, IDs, payslips)
+  - Async processing with workflow-level polling
+  - Independent retry policies per document
+  - State persistence to avoid reexecution on failure
+  - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for detailed setup and usage
+- **AWS Bedrock AgentCore**: Code Interpreter for sophisticated financial analysis (DTI, risk scoring, trend analysis)
+  - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for implementation details
 - **Strands Integration**: Agent orchestration with structured output validation using Ollama or AWS Bedrock models
 - **Provider Fallback**: Temporal-orchestrated fallback from CIBIL to Experian for credit reports
 - **Streamlit UI**: User interface for loan submission and underwriter review workflow
@@ -30,6 +40,7 @@ sequenceDiagram
 	participant DataAgent as DataFetchAgent
 	participant CreditAgent as CreditReportAgent
 	participant Mockoon as Mock APIs
+	participant BDA as AWS Bedrock Data Automation
 	participant LLM as LLM Provider (Ollama/Bedrock)
 
 	User->>Streamlit: Submit loan application
@@ -43,10 +54,35 @@ sequenceDiagram
 	Mockoon-->>DataAgent: bank account data
 	DataAgent-->>Worker: validated bank data
 
-	Worker->>DataAgent: fetch_documents(applicant_id)
-	DataAgent->>Mockoon: HTTP GET /documents?applicant_id=X
-	Mockoon-->>DataAgent: document metadata
-	DataAgent-->>Worker: validated documents
+	Note over Supervisor, Worker: Document Processing - Async Activity Completion Pattern
+	loop For Each Document
+		Worker->>Worker: trigger_document_processing(doc_type, path)
+		Note over Worker: Upload to S3, invoke BDA async
+		Worker->>BDA: invoke_data_automation_async()
+		BDA-->>Worker: invocation_arn
+		Worker-->>Supervisor: Store invocation_arn in workflow state
+
+		loop Poll with Durable Timer (max 60 attempts)
+			Supervisor->>Supervisor: await workflow.sleep(10 seconds)
+			Note over Supervisor: Durable timer - survives crashes
+			Supervisor->>Worker: check_document_status(invocation_arn)
+			Worker->>BDA: get_data_automation_status()
+			alt BDA Processing Complete
+				BDA-->>Worker: Success + extracted data
+				Worker-->>Supervisor: extracted_data (saved to JSON)
+				Note over Supervisor: Exit polling loop
+			else BDA Still Processing
+				BDA-->>Worker: InProgress
+				Worker-->>Supervisor: status: in_progress
+				Note over Supervisor: Continue polling
+			else BDA Failed
+				BDA-->>Worker: Failed + error
+				Worker-->>Supervisor: status: failed
+				Note over Supervisor: Exit polling loop, log error
+			end
+		end
+	end
+	Note over Supervisor: All documents processed independently
 
 	Worker->>CreditAgent: fetch_credit_report_cibil(applicant_id)
 	CreditAgent->>Mockoon: HTTP GET /cibil?applicant_id=X
@@ -124,6 +160,10 @@ sequenceDiagram
 - **LLM Provider** (one of the following):
   - **Ollama**: Local installation with model (default: `llama3:latest`, configurable via `.env`)
   - **AWS Bedrock**: Access to AWS Bedrock service with API key and supported models (e.g., `au.anthropic.claude-sonnet-4-5-20250929-v1:0`)
+- **AWS Bedrock Data Automation** (for document processing):
+  - AWS account with Bedrock Data Automation enabled
+  - S3 bucket for temporary file storage
+  - BDA project ARN with blueprints: `bank-statement`, `us-driver-license`, `payslip`
 - **Mockoon**: Mock API server running on port 3233 (configuration available in `mockoon` folder)
 - **Python 3.9+**: Required for all dependencies
 - **Dependencies**: Install from `requirements.txt`
@@ -165,6 +205,10 @@ MODEL_PROVIDER=aws-bedrock
 AWS_BEARER_TOKEN_BEDROCK=<your-api-key>
 AWS_REGION=<your-region>  # e.g., ap-southeast-2
 AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1:0
+
+# AWS Bedrock Data Automation Configuration (for document processing):
+AWS_S3_BUCKET=your-s3-bucket-name
+BEDROCK_DATA_AUTOMATION_PROJECT_ARN=arn:aws:bedrock:region:account:data-automation-project/project-id
 ```
 
 3. **Start required services:**
@@ -244,8 +288,17 @@ To use Temporal Cloud instead of a local server:
 
 ## Key Features
 - **Structured Data Validation**: Strands integration provides automatic validation of loan applications
-- **Mock Data Services**: Simulated bank account, document, and credit report fetching
-- **AI-Powered Analysis**: Specialist agents for income, expense, and credit assessment using Ollama
+- **Async Document Processing**: AWS Bedrock Data Automation extracts structured data from documents with:
+  - Workflow-level polling loop with durable timer sleep
+  - Independent retry policies per document
+  - State persistence to avoid reprocessing on failure
+  - Support for bank statements, IDs, and payslips
+  - 📄 [Detailed documentation](AGENTCORE_INTEGRATION.md#2-bedrock-data-automation-ocr-step-2)
+- **AgentCore Code Interpreter**: Sophisticated financial analysis with Python code execution
+  - DTI calculations, trend analysis, risk scoring
+  - 📄 [Implementation guide](AGENTCORE_INTEGRATION.md#3-agentcore-code-interpreter-step-3)
+- **Mock Data Services**: Simulated bank account and credit report fetching
+- **AI-Powered Analysis**: Specialist agents for income, expense, and credit assessment using Ollama or AWS Bedrock
 - **Human-in-the-Loop**: Workflow pauses for human underwriter review and decision
 - **Durable Execution**: Temporal ensures reliable workflow execution with automatic retries
 - **Real-time UI**: Streamlit interface for application submission and review workflow
@@ -271,15 +324,28 @@ To use Temporal Cloud instead of a local server:
 ```
 
 ## Development Notes
-- **Mock Data Services**: Uses Mockoon for simulating bank, document, and credit bureau APIs
+- **Mock Data Services**: Uses Mockoon for simulating bank and credit bureau APIs
 - **Agent Architecture**: Strands agents are organized in reusable classes under `backend/classes/agents/`
 - **Separation of Concerns**:
   - Temporal activities handle durable execution and retry logic (outer loop)
   - Strands agents handle intelligent data fetching and validation (inner loop)
+- **Async Activity Completion Pattern**: Document processing demonstrates Temporal best practices:
+  - Loop in workflow (not activity) for better state management
+  - Durable timer sleep (`workflow.sleep()`) instead of blocking `sleep()`
+  - Each document gets independent retry policy
+  - Failed documents don't cause reprocessing of successful ones
+  - 📄 [See detailed implementation](AGENTCORE_INTEGRATION.md#workflow-changes)
 - **Provider Fallback Pattern**: Temporal workflow orchestrates CIBIL → Experian fallback for credit reports
 - **Configurable LLM**: Support for both Ollama (local) and AWS Bedrock (cloud) models via environment variables
 - **Production Considerations**: Would require secure API integrations, authentication, and real data providers
 - **Human-in-the-Loop**: Workflow supports binary approve/reject decisions with AI-generated explanations
+
+## Additional Documentation
+- **[AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md)**: Comprehensive guide for AWS Bedrock Data Automation and AgentCore Code Interpreter integration
+  - Detailed setup instructions
+  - Configuration examples
+  - Troubleshooting guide
+  - Testing procedures
 
 ## Contributing
 

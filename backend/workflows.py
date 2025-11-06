@@ -130,15 +130,90 @@ class SupervisorWorkflow:
         )
 
         # Activity 2: Process documents with Bedrock Data Automation
-        # - Temporal: Ensures reliable execution with retries
-        # - Bedrock Data Automation: Extracts structured data from uploaded documents
-        # - Saves JSON metadata for downstream activities
-        docs = await workflow.execute_activity(
-            "fetch_documents",
-            application,  # Pass full application with document_paths
-            start_to_close_timeout=timedelta(minutes=15),  # OCR processing can take time
-            retry_policy=self._default_retry_policy
-        )
+        # ════════════════════════════════════════════════════════════
+        # KEY ARCHITECTURE PATTERN - ASYNC ACTIVITY COMPLETION:
+        # - Loop through documents in WORKFLOW (not activity)
+        # - Each document gets independent retry policy
+        # - Use Temporal's durable timer sleep for polling
+        # - Avoid reexecution: completed documents persist in workflow state
+        # ════════════════════════════════════════════════════════════
+        document_paths = application.get("document_paths", {})
+        processed_documents = []
+
+        if document_paths:
+            workflow.logger.info(f"Processing {len(document_paths)} documents with Bedrock Data Automation")
+
+            # Process each document independently
+            for doc_type, local_path in document_paths.items():
+                workflow.logger.info(f"Starting processing for {doc_type}")
+
+                try:
+                    # Step 1: Trigger async BDA processing
+                    trigger_result = await workflow.execute_activity(
+                        "trigger_document_processing",
+                        {
+                            "applicant_id": application["applicant_id"],
+                            "doc_type": doc_type,
+                            "local_path": local_path
+                        },
+                        start_to_close_timeout=timedelta(seconds=60),
+                        retry_policy=self._default_retry_policy
+                    )
+
+                    workflow.logger.info(f"Triggered BDA for {doc_type}: {trigger_result['invocation_arn']}")
+
+                    # Step 2: Poll for completion with durable timer sleep
+                    max_attempts = 60  # 10 minutes max (60 * 10 seconds)
+                    attempt = 0
+
+                    while attempt < max_attempts:
+                        # Check status using activity
+                        status_result = await workflow.execute_activity(
+                            "check_document_status",
+                            trigger_result,
+                            start_to_close_timeout=timedelta(seconds=30),
+                            retry_policy=RetryPolicy(maximum_attempts=3)
+                        )
+
+                        if status_result["status"] == "success":
+                            workflow.logger.info(f"BDA processing completed for {doc_type}")
+                            processed_documents.append(status_result)
+                            break
+                        elif status_result["status"] == "failed":
+                            workflow.logger.error(f"BDA processing failed for {doc_type}: {status_result.get('error')}")
+                            processed_documents.append(status_result)
+                            break
+                        else:
+                            # Still in progress - use durable timer sleep
+                            workflow.logger.info(f"BDA processing {doc_type}: in progress (attempt {attempt + 1}/{max_attempts})")
+                            await workflow.sleep(timedelta(seconds=10))
+                            attempt += 1
+
+                    if attempt >= max_attempts:
+                        workflow.logger.error(f"BDA processing timeout for {doc_type}")
+                        processed_documents.append({
+                            "doc_type": doc_type,
+                            "status": "timeout",
+                            "error": "Processing exceeded maximum wait time"
+                        })
+
+                except ActivityError as e:
+                    workflow.logger.error(f"Activity error processing {doc_type}: {e}")
+                    processed_documents.append({
+                        "doc_type": doc_type,
+                        "status": "error",
+                        "error": str(e)
+                    })
+
+            docs = {
+                "documents": processed_documents,
+                "total_processed": len(processed_documents),
+                "successful": len([d for d in processed_documents if d.get("status") == "success"]),
+                "failed": len([d for d in processed_documents if d.get("status") != "success"])
+            }
+        else:
+            workflow.logger.warning("No document paths provided, skipping OCR processing")
+            docs = {"documents": [], "status": "no_documents_uploaded"}
 
         # Activity 3: Fetch credit report with provider fallback
         # ════════════════════════════════════════════════════════

@@ -4,6 +4,8 @@
 
 This document describes the integration of **AWS Bedrock AgentCore** and **Bedrock Data Automation** into the Temporal Agentic Loan Underwriter project. The integration showcases how Temporal workflows orchestrate AI-powered document processing and financial analysis at scale.
 
+> **📘 See also:** [README.md](README.md) for general project overview, setup instructions, and architecture.
+
 ---
 
 ## Architecture
@@ -98,11 +100,18 @@ await wf.signal("documents_uploaded", {"document_paths": uploaded_files})
 ---
 
 ### 2. **Bedrock Data Automation OCR (Step 2)**
-**Location:** [backend/activities.py](backend/activities.py#L65-L302)
+**Location:** [backend/activities.py](backend/activities.py#L67-L252) | [backend/workflows.py](backend/workflows.py#L132-L216)
 
-#### **Activity:** `fetch_documents`
+#### **Activities:** `trigger_document_processing` & `check_document_status`
 
-**Purpose:** Extract structured data from uploaded documents using AWS Bedrock Data Automation
+**Purpose:** Extract structured data from uploaded documents using AWS Bedrock Data Automation with async activity completion pattern
+
+**Architecture Pattern - Loop in Workflow:**
+- **`trigger_document_processing`**: Initiates BDA processing for a single document, returns invocation ARN
+- **`check_document_status`**: Checks status without blocking
+- **Workflow Loop**: Iterates through documents with durable timer sleep
+- **State Persistence**: Completed documents stored in workflow state
+- **Independent Retry**: Each document gets its own retry policy
 
 **Features:**
 - Processes local files (uploads to S3 temporarily)
@@ -110,9 +119,10 @@ await wf.signal("documents_uploaded", {"document_paths": uploaded_files})
   - `bedrock-data-automation-public-bank-statement`
   - `bedrock-data-automation-public-us-driver-license`
   - `bedrock-data-automation-public-payslip`
-- Async processing with status polling
+- Async processing with workflow-level polling (uses `workflow.sleep()`)
 - Saves extracted JSON to `backend/uploads/{workflow_id}/{doc_type}_extracted.json`
 - Cleans up temporary S3 files after processing
+- Avoids reprocessing on failure (replay protection)
 
 **Configuration Required:**
 ```bash
@@ -152,8 +162,10 @@ AWS_REGION=us-east-1
 ```
 
 **Key Implementation:**
+
+**Activity: trigger_document_processing**
 ```python
-# Invoke Bedrock Data Automation
+# Upload to S3 and invoke BDA
 response = bda_runtime.invoke_data_automation_async(
     dataAutomationConfiguration={
         "dataAutomationProjectArn": project_arn,
@@ -164,13 +176,66 @@ response = bda_runtime.invoke_data_automation_async(
     dataAutomationProfileArn=f'arn:aws:bedrock:{region}:aws:data-automation-profile/us.data-automation-v1'
 )
 
-# Poll for completion
-while attempt < max_attempts:
-    status_response = bda_runtime.get_data_automation_status(invocationArn=invocation_arn)
-    if status_response['status'] == 'Success':
-        extracted_data = _retrieve_bda_results(s3_client, output_s3_uri)
-        # Save JSON locally
-        break
+# Return immediately with invocation ARN
+return {
+    "doc_type": doc_type,
+    "invocation_arn": response['invocationArn'],
+    "s3_key": s3_key,
+    "bucket_name": bucket_name,
+    "local_path": local_path,
+    "status": "triggered"
+}
+```
+
+**Workflow: Document Processing Loop**
+```python
+# Loop through documents in WORKFLOW (not activity)
+for doc_type, local_path in document_paths.items():
+    # Step 1: Trigger async processing
+    trigger_result = await workflow.execute_activity(
+        "trigger_document_processing",
+        {"applicant_id": app_id, "doc_type": doc_type, "local_path": path},
+        start_to_close_timeout=timedelta(seconds=60),
+        retry_policy=self._default_retry_policy
+    )
+
+    # Step 2: Poll with durable timer sleep
+    max_attempts = 60  # 10 minutes max
+    attempt = 0
+
+    while attempt < max_attempts:
+        status_result = await workflow.execute_activity(
+            "check_document_status",
+            trigger_result,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3)
+        )
+
+        if status_result["status"] == "success":
+            processed_documents.append(status_result)
+            break
+        elif status_result["status"] == "failed":
+            processed_documents.append(status_result)
+            break
+        else:
+            # Durable timer - survives crashes
+            await workflow.sleep(timedelta(seconds=10))
+            attempt += 1
+```
+
+**Activity: check_document_status**
+```python
+# Check status (non-blocking)
+status_response = bda_runtime.get_data_automation_status(invocationArn=invocation_arn)
+
+if status_response['status'] == 'Success':
+    extracted_data = _retrieve_bda_results(s3_client, output_s3_uri)
+    # Save JSON locally
+    return {"doc_type": doc_type, "status": "success", "extracted_data": extracted_data}
+elif status_response['status'] in ['Failed', 'Cancelled']:
+    return {"doc_type": doc_type, "status": "failed", "error": error_msg}
+else:
+    return {"doc_type": doc_type, "status": "in_progress"}
 ```
 
 ---
@@ -260,14 +325,47 @@ await workflow.wait_condition(lambda: self._documents_uploaded, timeout=timedelt
 application["document_paths"] = self._document_paths
 ```
 
-### **Phase 1: Document Processing**
+### **Phase 1: Document Processing (Async Activity Completion Pattern)**
 ```python
-docs = await workflow.execute_activity(
-    "fetch_documents",
-    application,  # Contains document_paths
-    start_to_close_timeout=timedelta(minutes=15),  # OCR takes time
-    retry_policy=self._default_retry_policy
-)
+# Loop through documents in WORKFLOW (not activity)
+document_paths = application.get("document_paths", {})
+processed_documents = []
+
+for doc_type, local_path in document_paths.items():
+    # Trigger async BDA processing
+    trigger_result = await workflow.execute_activity(
+        "trigger_document_processing",
+        {"applicant_id": application["applicant_id"], "doc_type": doc_type, "local_path": local_path},
+        start_to_close_timeout=timedelta(seconds=60),
+        retry_policy=self._default_retry_policy
+    )
+
+    # Poll for completion with durable timer sleep
+    max_attempts = 60
+    attempt = 0
+
+    while attempt < max_attempts:
+        status_result = await workflow.execute_activity(
+            "check_document_status",
+            trigger_result,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3)
+        )
+
+        if status_result["status"] in ["success", "failed"]:
+            processed_documents.append(status_result)
+            break
+
+        # Durable timer - survives crashes, doesn't consume resources
+        await workflow.sleep(timedelta(seconds=10))
+        attempt += 1
+
+docs = {
+    "documents": processed_documents,
+    "total_processed": len(processed_documents),
+    "successful": len([d for d in processed_documents if d.get("status") == "success"]),
+    "failed": len([d for d in processed_documents if d.get("status") != "success"])
+}
 ```
 
 ### **Phase 2: Enhanced Assessment**
@@ -504,6 +602,9 @@ cat backend/uploads/loan-12345/bank_statement_extracted.json | jq
 ✅ Confidence scores for validation
 ✅ Automatic document classification
 ✅ Multi-page document splitting
+✅ Async activity completion pattern with workflow-level polling
+✅ Independent retry policies per document
+✅ State persistence prevents reprocessing on failure
 
 ### **3. AgentCore Code Interpreter**
 ✅ Secure Python code execution

@@ -4,7 +4,6 @@ from typing import Dict, Any
 import os
 import json
 from pathlib import Path
-from time import sleep
 from utilities import model
 from strands import Agent
 from strands.models.ollama import OllamaModel
@@ -64,191 +63,190 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
 
 
 @activity.defn
-async def fetch_documents(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Process uploaded documents using AWS Bedrock Data Automation (local files).
+    Trigger async BDA processing for a single document.
 
     ARCHITECTURE NOTE:
-    - Temporal Activity: Provides durable execution and retry logic for OCR processing
-    - Bedrock Data Automation: Extracts structured data from documents (bank statements, IDs, etc.)
-    - Output: Saves extracted JSON metadata to backend/uploads/{workflow_id}/ for each document
-    - Works directly with local files - automatically uploads to S3 only during processing
+    - Temporal Activity: Triggers BDA processing and returns immediately
+    - Async Pattern: Returns invocation ARN for status polling in workflow
+    - This enables Temporal's durable timer sleep instead of blocking activity
 
-    This activity uses:
-    - Public blueprints: bank-statement, us-driver-license, payslip
-    - Custom extraction schemas for structured data
-    - Async processing with status polling
+    This activity:
+    - Uploads document to S3
+    - Invokes BDA async processing
+    - Returns invocation ARN for tracking
     """
     try:
         applicant_id = payload.get("applicant_id")
-        document_paths = payload.get("document_paths", {})
+        doc_type = payload.get("doc_type")
+        local_path = payload.get("local_path")
 
-        if not document_paths:
-            activity.logger.warning("No document paths provided, skipping OCR processing")
-            return {"documents": [], "status": "no_documents_uploaded"}
-
-        activity.logger.info(f"Processing {len(document_paths)} documents with Bedrock Data Automation")
+        activity.logger.info(f"Triggering BDA processing for {doc_type}: {local_path}")
 
         # Initialize AWS clients
         region_name = os.getenv("AWS_REGION", "us-east-1")
         s3_client = boto3.client('s3', region_name=region_name)
         bda_runtime = boto3.client('bedrock-data-automation-runtime', region_name=region_name)
 
-        # Get S3 bucket (temporary storage for BDA processing)
+        # Get S3 bucket
         bucket_name = os.getenv("AWS_S3_BUCKET")
         if not bucket_name:
-            activity.logger.warning("AWS_S3_BUCKET not set, will use temporary S3 bucket")
-            # You can create a temporary bucket or use a default one
+            activity.logger.warning("AWS_S3_BUCKET not set, using temporary bucket name")
             bucket_name = f"loan-underwriter-temp-{applicant_id[:8]}"
 
         # Get Data Automation project ARN
         project_arn = os.getenv("BEDROCK_DATA_AUTOMATION_PROJECT_ARN")
         if not project_arn:
-            raise ValueError("BEDROCK_DATA_AUTOMATION_PROJECT_ARN environment variable not set. "
-                           "Please create a BDA project with bank-statement, us-driver-license, and payslip blueprints.")
+            raise ValueError("BEDROCK_DATA_AUTOMATION_PROJECT_ARN environment variable not set.")
 
-        processed_documents = []
+        file_path = Path(local_path)
 
-        # Process each document type
-        for doc_type, local_path in document_paths.items():
-            activity.logger.info(f"Processing {doc_type}: {local_path}")
+        # Upload to S3
+        s3_key = f"loan-underwriter-temp/input/{applicant_id}/{file_path.name}"
+        s3_output_prefix = f"loan-underwriter-temp/output/{applicant_id}/{doc_type}"
 
-            file_path = Path(local_path)
+        try:
+            with open(file_path, 'rb') as f:
+                s3_client.upload_fileobj(f, bucket_name, s3_key)
+            activity.logger.info(f"Uploaded {doc_type} to S3: s3://{bucket_name}/{s3_key}")
+        except Exception as upload_error:
+            raise ApplicationError(
+                f"S3 upload failed for {doc_type}: {str(upload_error)}",
+                type="S3UploadError",
+                non_retryable=False
+            )
 
-            # Read file as bytes for direct processing
-            try:
-                with open(file_path, 'rb') as f:
-                    file_bytes = f.read()
+        # Invoke Bedrock Data Automation (async)
+        response = bda_runtime.invoke_data_automation_async(
+            dataAutomationConfiguration={
+                "dataAutomationProjectArn": project_arn,
+                "stage": "LIVE"
+            },
+            inputConfiguration={
+                's3Uri': f's3://{bucket_name}/{s3_key}'
+            },
+            outputConfiguration={
+                's3Uri': f's3://{bucket_name}/{s3_output_prefix}'
+            },
+            dataAutomationProfileArn=f'arn:aws:bedrock:{region_name}:aws:data-automation-profile/us.data-automation-v1'
+        )
 
-                activity.logger.info(f"Read {len(file_bytes)} bytes from {doc_type}")
-
-                # For BDA, we need to temporarily upload to S3 (BDA requirement)
-                # But we'll clean it up after processing
-                s3_key = f"loan-underwriter-temp/input/{applicant_id}/{file_path.name}"
-                s3_output_prefix = f"loan-underwriter-temp/output/{applicant_id}/{doc_type}"
-
-                try:
-                    s3_client.upload_fileobj(
-                        open(file_path, 'rb'),
-                        bucket_name,
-                        s3_key
-                    )
-                    activity.logger.info(f"Temporarily uploaded {doc_type} to S3 for BDA processing")
-                except Exception as upload_error:
-                    activity.logger.error(f"S3 upload failed for {doc_type}: {upload_error}")
-                    processed_documents.append({
-                        "type": doc_type,
-                        "status": "upload_failed",
-                        "error": str(upload_error)
-                    })
-                    continue
-
-                # Invoke Bedrock Data Automation
-                response = bda_runtime.invoke_data_automation_async(
-                    dataAutomationConfiguration={
-                        "dataAutomationProjectArn": project_arn,
-                        "stage": "LIVE"
-                    },
-                    inputConfiguration={
-                        's3Uri': f's3://{bucket_name}/{s3_key}'
-                    },
-                    outputConfiguration={
-                        's3Uri': f's3://{bucket_name}/{s3_output_prefix}'
-                    },
-                    dataAutomationProfileArn=f'arn:aws:bedrock:{region_name}:aws:data-automation-profile/us.data-automation-v1'
-                )
-
-                invocation_arn = response['invocationArn']
-                activity.logger.info(f"Started BDA processing for {doc_type}: {invocation_arn}")
-
-                # Poll for completion (with timeout)
-                max_attempts = 60  # 10 minutes max
-                attempt = 0
-                while attempt < max_attempts:
-                    status_response = bda_runtime.get_data_automation_status(
-                        invocationArn=invocation_arn
-                    )
-
-                    status = status_response['status']
-                    if status == 'Success':
-                        activity.logger.info(f"BDA processing completed for {doc_type}")
-
-                        # Retrieve and parse results
-                        output_s3_uri = status_response['outputConfiguration']['s3Uri']
-                        extracted_data = _retrieve_bda_results(s3_client, output_s3_uri)
-
-                        # Save JSON to local uploads directory (same folder as original file)
-                        json_path = file_path.parent / f"{doc_type}_extracted.json"
-                        with open(json_path, 'w') as f:
-                            json.dump(extracted_data, f, indent=2)
-
-                        activity.logger.info(f"Saved extracted data to {json_path}")
-
-                        # Clean up temporary S3 files
-                        try:
-                            s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
-                            activity.logger.info(f"Cleaned up temporary S3 file: {s3_key}")
-                        except Exception as cleanup_error:
-                            activity.logger.warning(f"Failed to cleanup S3 file: {cleanup_error}")
-
-                        processed_documents.append({
-                            "type": doc_type,
-                            "status": "success",
-                            "extracted_data": extracted_data,
-                            "json_path": str(json_path),
-                            "local_file": str(file_path)
-                        })
-                        break
-                    elif status in ['Failed', 'Cancelled']:
-                        error_msg = status_response.get('errorMessage', 'Unknown error')
-                        activity.logger.error(f"BDA processing failed for {doc_type}: {error_msg}")
-                        processed_documents.append({
-                            "type": doc_type,
-                            "status": "processing_failed",
-                            "error": error_msg
-                        })
-                        break
-                    else:
-                        # Still in progress
-                        activity.logger.info(f"BDA processing {doc_type}: {status} (attempt {attempt + 1}/{max_attempts})")
-                        sleep(10)
-                        attempt += 1
-
-                if attempt >= max_attempts:
-                    activity.logger.error(f"BDA processing timeout for {doc_type}")
-                    processed_documents.append({
-                        "type": doc_type,
-                        "status": "timeout",
-                        "error": "Processing exceeded maximum wait time"
-                    })
-
-            except ClientError as bda_error:
-                activity.logger.error(f"BDA invocation failed for {doc_type}: {bda_error}")
-                processed_documents.append({
-                    "type": doc_type,
-                    "status": "invocation_failed",
-                    "error": str(bda_error)
-                })
-            except Exception as file_error:
-                activity.logger.error(f"File processing failed for {doc_type}: {file_error}")
-                processed_documents.append({
-                    "type": doc_type,
-                    "status": "file_error",
-                    "error": str(file_error)
-                })
+        invocation_arn = response['invocationArn']
+        activity.logger.info(f"Started BDA processing for {doc_type}: {invocation_arn}")
 
         return {
-            "documents": processed_documents,
-            "total_processed": len(processed_documents),
-            "successful": len([d for d in processed_documents if d.get("status") == "success"]),
-            "failed": len([d for d in processed_documents if d.get("status") != "success"])
+            "doc_type": doc_type,
+            "invocation_arn": invocation_arn,
+            "s3_key": s3_key,
+            "bucket_name": bucket_name,
+            "local_path": local_path,
+            "status": "triggered"
         }
 
-    except Exception as e:
-        activity.logger.error(f"Document processing failed: {str(e)}")
+    except ClientError as e:
         raise ApplicationError(
-            f"Failed to process documents: {str(e)}",
-            type="DocumentProcessingError",
+            f"BDA invocation failed for {doc_type}: {str(e)}",
+            type="BDAInvocationError",
+            non_retryable=False
+        )
+    except Exception as e:
+        raise ApplicationError(
+            f"Failed to trigger document processing: {str(e)}",
+            type="DocumentTriggerError",
+            non_retryable=False
+        )
+
+
+@activity.defn
+async def check_document_status(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Check status of BDA processing for a single document.
+
+    ARCHITECTURE NOTE:
+    - Temporal Activity: Checks current status (non-blocking)
+    - Called by workflow in a loop with durable timer sleep
+    - Returns status and extracted data when complete
+
+    This activity:
+    - Polls BDA status using invocation ARN
+    - Returns status: 'InProgress', 'Success', 'Failed', 'Cancelled'
+    - Retrieves and saves extracted data when successful
+    """
+    try:
+        invocation_arn = payload.get("invocation_arn")
+        doc_type = payload.get("doc_type")
+        local_path = payload.get("local_path")
+        s3_key = payload.get("s3_key")
+        bucket_name = payload.get("bucket_name")
+
+        # Initialize AWS clients
+        region_name = os.getenv("AWS_REGION", "us-east-1")
+        s3_client = boto3.client('s3', region_name=region_name)
+        bda_runtime = boto3.client('bedrock-data-automation-runtime', region_name=region_name)
+
+        # Check status
+        status_response = bda_runtime.get_data_automation_status(
+            invocationArn=invocation_arn
+        )
+
+        status = status_response['status']
+        activity.logger.info(f"BDA status for {doc_type}: {status}")
+
+        if status == 'Success':
+            # Retrieve and parse results
+            output_s3_uri = status_response['outputConfiguration']['s3Uri']
+            extracted_data = _retrieve_bda_results(s3_client, output_s3_uri)
+
+            # Save JSON to local uploads directory
+            file_path = Path(local_path)
+            json_path = file_path.parent / f"{doc_type}_extracted.json"
+            with open(json_path, 'w') as f:
+                json.dump(extracted_data, f, indent=2)
+
+            activity.logger.info(f"Saved extracted data to {json_path}")
+
+            # Clean up temporary S3 files
+            try:
+                s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
+                activity.logger.info(f"Cleaned up temporary S3 file: {s3_key}")
+            except Exception as cleanup_error:
+                activity.logger.warning(f"Failed to cleanup S3 file: {cleanup_error}")
+
+            return {
+                "doc_type": doc_type,
+                "status": "success",
+                "extracted_data": extracted_data,
+                "json_path": str(json_path),
+                "local_file": str(file_path)
+            }
+
+        elif status in ['Failed', 'Cancelled']:
+            error_msg = status_response.get('errorMessage', 'Unknown error')
+            activity.logger.error(f"BDA processing failed for {doc_type}: {error_msg}")
+            return {
+                "doc_type": doc_type,
+                "status": "failed",
+                "error": error_msg
+            }
+
+        else:
+            # Still in progress
+            return {
+                "doc_type": doc_type,
+                "status": "in_progress"
+            }
+
+    except ClientError as e:
+        raise ApplicationError(
+            f"Failed to check BDA status for {doc_type}: {str(e)}",
+            type="BDAStatusCheckError",
+            non_retryable=False
+        )
+    except Exception as e:
+        raise ApplicationError(
+            f"Failed to check document status: {str(e)}",
+            type="DocumentStatusError",
             non_retryable=False
         )
 
