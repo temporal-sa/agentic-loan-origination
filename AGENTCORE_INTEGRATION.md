@@ -104,14 +104,16 @@ await wf.signal("documents_uploaded", {"document_paths": uploaded_files})
 
 #### **Activities:** `trigger_document_processing` & `check_document_status`
 
-**Purpose:** Extract structured data from uploaded documents using AWS Bedrock Data Automation with async activity completion pattern
+**Purpose:** Extract structured data from uploaded documents using AWS Bedrock Data Automation with **parallel fan-out pattern**
 
-**Architecture Pattern - Loop in Workflow:**
+**Architecture Pattern - Fan-Out with asyncio.gather():**
+- **`_process_single_document`**: Workflow helper method encapsulating full document lifecycle
 - **`trigger_document_processing`**: Initiates BDA processing for a single document, returns invocation ARN
 - **`check_document_status`**: Checks status without blocking
-- **Workflow Loop**: Iterates through documents with durable timer sleep
-- **State Persistence**: Completed documents stored in workflow state
-- **Independent Retry**: Each document gets its own retry policy
+- **Parallel Execution**: All documents processed simultaneously using `asyncio.gather()`
+- **Time-Based Polling**: Uses `workflow.now()` instead of manual attempt counters
+- **Fault Isolation**: Each document's failure won't affect others
+- **State Persistence**: Completed documents stored in workflow state, won't reprocess on restart
 
 **Features:**
 - Processes local files (uploads to S3 temporarily)
@@ -325,47 +327,95 @@ await workflow.wait_condition(lambda: self._documents_uploaded, timeout=timedelt
 application["document_paths"] = self._document_paths
 ```
 
-### **Phase 1: Document Processing (Async Activity Completion Pattern)**
+### **Phase 1: Document Processing (Fan-Out Parallel Pattern)**
+
+**Pattern:** All documents processed simultaneously using `asyncio.gather()` for true parallelism.
+
 ```python
-# Loop through documents in WORKFLOW (not activity)
+import asyncio
+
+# FAN-OUT: Create parallel tasks for each document
 document_paths = application.get("document_paths", {})
-processed_documents = []
 
-for doc_type, local_path in document_paths.items():
-    # Trigger async BDA processing
-    trigger_result = await workflow.execute_activity(
-        "trigger_document_processing",
-        {"applicant_id": application["applicant_id"], "doc_type": doc_type, "local_path": local_path},
-        start_to_close_timeout=timedelta(seconds=60),
-        retry_policy=self._default_retry_policy
-    )
+if document_paths:
+    # Launch all documents in parallel
+    document_tasks = [
+        self._process_single_document(
+            application["applicant_id"],
+            doc_type,
+            local_path
+        )
+        for doc_type, local_path in document_paths.items()
+    ]
 
-    # Poll for completion with durable timer sleep
-    max_attempts = 60
-    attempt = 0
+    # Wait for all parallel processing to complete
+    # Temporal ensures durability - completed tasks won't re-execute on restart
+    processed_documents = await asyncio.gather(*document_tasks)
 
-    while attempt < max_attempts:
-        status_result = await workflow.execute_activity(
-            "check_document_status",
-            trigger_result,
-            start_to_close_timeout=timedelta(seconds=30),
-            retry_policy=RetryPolicy(maximum_attempts=3)
+    docs = {
+        "documents": processed_documents,
+        "total_processed": len(processed_documents),
+        "successful": len([d for d in processed_documents if d.get("status") == "success"]),
+        "failed": len([d for d in processed_documents if d.get("status") != "success"])
+    }
+```
+
+**Helper Method: _process_single_document**
+
+Each document is processed independently with its own retry policy and timeout:
+
+```python
+async def _process_single_document(
+    self,
+    applicant_id: str,
+    doc_type: str,
+    local_path: str
+) -> Dict[str, Any]:
+    """Process a single document with BDA - runs in parallel."""
+
+    try:
+        # Step 1: Trigger async BDA processing
+        trigger_result = await workflow.execute_activity(
+            "trigger_document_processing",
+            {"applicant_id": applicant_id, "doc_type": doc_type, "local_path": local_path},
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=self._default_retry_policy
         )
 
-        if status_result["status"] in ["success", "failed"]:
-            processed_documents.append(status_result)
-            break
+        # Step 2: Poll for completion using time-based approach
+        max_wait_time = timedelta(minutes=10)
+        poll_interval = timedelta(seconds=10)
+        start_time = workflow.now()
 
-        # Durable timer - survives crashes, doesn't consume resources
-        await workflow.sleep(timedelta(seconds=10))
-        attempt += 1
+        while workflow.now() - start_time < max_wait_time:
+            status_result = await workflow.execute_activity(
+                "check_document_status",
+                trigger_result,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(maximum_attempts=3)
+            )
 
-docs = {
-    "documents": processed_documents,
-    "total_processed": len(processed_documents),
-    "successful": len([d for d in processed_documents if d.get("status") == "success"]),
-    "failed": len([d for d in processed_documents if d.get("status") != "success"])
-}
+            # Terminal states - exit polling loop
+            if status_result["status"] in ["success", "failed"]:
+                return status_result
+
+            # Durable timer - survives crashes, doesn't consume resources
+            await workflow.sleep(poll_interval)
+
+        # Timeout reached
+        return {
+            "doc_type": doc_type,
+            "status": "timeout",
+            "error": f"Processing exceeded maximum wait time of {max_wait_time}"
+        }
+
+    except ActivityError as e:
+        # Activity failed after all retry attempts
+        return {
+            "doc_type": doc_type,
+            "status": "error",
+            "error": str(e)
+        }
 ```
 
 ### **Phase 2: Enhanced Assessment**
@@ -602,9 +652,11 @@ cat backend/uploads/loan-12345/bank_statement_extracted.json | jq
 ✅ Confidence scores for validation
 ✅ Automatic document classification
 ✅ Multi-page document splitting
-✅ Async activity completion pattern with workflow-level polling
-✅ Independent retry policies per document
-✅ State persistence prevents reprocessing on failure
+✅ **Parallel fan-out processing** - all documents processed simultaneously
+✅ `asyncio.gather()` for true concurrent execution (Temporal-safe)
+✅ Time-based polling with `workflow.now()` (no manual counters)
+✅ Independent retry policies and fault isolation per document
+✅ State persistence prevents reprocessing on failure/restart
 
 ### **3. AgentCore Code Interpreter**
 ✅ Secure Python code execution

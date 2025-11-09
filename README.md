@@ -7,7 +7,7 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 - **Temporal Workflows**: SupervisorWorkflow orchestrates the entire loan processing pipeline with durable execution
   - Supports both **local Temporal** (default) and **Temporal Cloud** with API key authentication
   - Automatic connection detection based on environment variables
-  - **Async Activity Completion Pattern**: Document processing loop in workflow (not activity) with durable timer sleep
+  - **Fan-Out Parallel Processing Pattern**: All documents processed simultaneously using `asyncio.gather()`
 - **Strands HTTP Agents**: Reusable agent classes for intelligent data fetching with error handling and validation
   - `DataFetchAgent`: Generic HTTP data fetching with validation
   - `CreditReportAgent`: Specialized credit report validation with multi-provider support
@@ -15,9 +15,11 @@ This repository demonstrates an agentic loan underwriting system built with Temp
   - `trigger_document_processing`: Initiates async Bedrock Data Automation (BDA) processing per document
   - `check_document_status`: Polls BDA status without blocking
 - **AWS Bedrock Data Automation**: Extracts structured data from documents (bank statements, IDs, payslips)
-  - Async processing with workflow-level polling
-  - Independent retry policies per document
-  - State persistence to avoid reexecution on failure
+  - **Parallel fan-out processing**: All documents processed simultaneously
+  - Uses `asyncio.gather()` for concurrent execution (Temporal-safe)
+  - Durable timer sleep with `workflow.now()` for time-based polling
+  - Independent retry policies and fault isolation per document
+  - State persistence ensures completed documents won't reprocess on failure
   - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for detailed setup and usage
 - **AWS Bedrock AgentCore**: Code Interpreter for sophisticated financial analysis (DTI, risk scoring, trend analysis)
   - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for implementation details
@@ -27,7 +29,7 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 - **Environment Configuration**: Configurable LLM settings (Ollama/AWS Bedrock) and Temporal settings (Local/Cloud) via `.env` file
 
 ## Sequence diagram
-The diagram below shows the end-to-end flow: user submits via Streamlit, Streamlit calls FastAPI which starts a Temporal workflow. A worker executes activities (mock APIs and specialist agents), the workflow calls Ollama for a summary/decision, then the system awaits a human-review signal. The underwriter approves/rejects via the UI which signals the running workflow.
+The diagram below shows the end-to-end flow: user submits via Streamlit, Streamlit calls FastAPI which starts a Temporal workflow. A worker executes activities (mock APIs and specialist agents). Documents are processed in parallel using Temporal's fan-out pattern with `asyncio.gather()`. The workflow calls Ollama/Bedrock for a summary/decision, then awaits a human-review signal. The underwriter approves/rejects via the UI which signals the running workflow.
 
 ```mermaid
 sequenceDiagram
@@ -54,35 +56,47 @@ sequenceDiagram
 	Mockoon-->>DataAgent: bank account data
 	DataAgent-->>Worker: validated bank data
 
-	Note over Supervisor, Worker: Document Processing - Async Activity Completion Pattern
-	loop For Each Document
-		Worker->>Worker: trigger_document_processing(doc_type, path)
-		Note over Worker: Upload to S3, invoke BDA async
-		Worker->>BDA: invoke_data_automation_async()
-		BDA-->>Worker: invocation_arn
-		Worker-->>Supervisor: Store invocation_arn in workflow state
+	Note over Supervisor, Worker: Document Processing - Fan-Out Parallel Pattern
+	Note over Supervisor: asyncio.gather() processes all docs in parallel
 
-		loop Poll with Durable Timer (max 60 attempts)
-			Supervisor->>Supervisor: await workflow.sleep(10 seconds)
-			Note over Supervisor: Durable timer - survives crashes
-			Supervisor->>Worker: check_document_status(invocation_arn)
+	par Document 1 (Bank Statement)
+		Supervisor->>Worker: _process_single_document(bank_stmt)
+		Worker->>BDA: trigger_document_processing → S3 upload
+		BDA-->>Worker: invocation_arn
+
+		loop Time-based Poll (max 10 min)
+			Note over Supervisor: workflow.now() checks elapsed time
+			Supervisor->>Supervisor: await workflow.sleep(10s)
+			Supervisor->>Worker: check_document_status(arn)
 			Worker->>BDA: get_data_automation_status()
-			alt BDA Processing Complete
-				BDA-->>Worker: Success + extracted data
-				Worker-->>Supervisor: extracted_data (saved to JSON)
-				Note over Supervisor: Exit polling loop
-			else BDA Still Processing
-				BDA-->>Worker: InProgress
-				Worker-->>Supervisor: status: in_progress
-				Note over Supervisor: Continue polling
-			else BDA Failed
-				BDA-->>Worker: Failed + error
-				Worker-->>Supervisor: status: failed
-				Note over Supervisor: Exit polling loop, log error
+			alt Complete/Failed
+				BDA-->>Worker: Success/Failed + data
+				Worker-->>Supervisor: Return result
+			else In Progress
+				Note over Supervisor: Continue until timeout
 			end
 		end
+
+	and Document 2 (ID Card)
+		Supervisor->>Worker: _process_single_document(id_card)
+		Worker->>BDA: trigger_document_processing
+		BDA-->>Worker: invocation_arn
+		Note over Supervisor, BDA: Independent polling with own timer
+
+	and Document 3 (Pay Stub)
+		Supervisor->>Worker: _process_single_document(pay_stub)
+		Worker->>BDA: trigger_document_processing
+		BDA-->>Worker: invocation_arn
+		Note over Supervisor: Each doc isolated - failures don't affect others
+
+	and Document 4 (Address Proof)
+		Supervisor->>Worker: _process_single_document(address)
+		Worker->>BDA: trigger_document_processing
+		BDA-->>Worker: invocation_arn
 	end
-	Note over Supervisor: All documents processed independently
+
+	Note over Supervisor: asyncio.gather() waits for all docs
+	Note over Supervisor: Completed docs persist in workflow state
 
 	Worker->>CreditAgent: fetch_credit_report_cibil(applicant_id)
 	CreditAgent->>Mockoon: HTTP GET /cibil?applicant_id=X
@@ -288,11 +302,14 @@ To use Temporal Cloud instead of a local server:
 
 ## Key Features
 - **Structured Data Validation**: Strands integration provides automatic validation of loan applications
-- **Async Document Processing**: AWS Bedrock Data Automation extracts structured data from documents with:
-  - Workflow-level polling loop with durable timer sleep
-  - Independent retry policies per document
-  - State persistence to avoid reprocessing on failure
-  - Support for bank statements, IDs, and payslips
+- **Parallel Document Processing**: AWS Bedrock Data Automation extracts structured data from documents with:
+  - **Fan-out parallelism**: All documents processed simultaneously using `asyncio.gather()`
+  - **Time-based polling**: Uses `workflow.now()` instead of manual attempt counters
+  - **Fault isolation**: Each document's failure won't affect others
+  - **Durable timer sleep**: Survives worker crashes and restarts
+  - **Independent retry policies** per document
+  - **State persistence** ensures completed documents won't reprocess on failure
+  - Support for bank statements, IDs, payslips, and address proof
   - 📄 [Detailed documentation](AGENTCORE_INTEGRATION.md#2-bedrock-data-automation-ocr-step-2)
 - **AgentCore Code Interpreter**: Sophisticated financial analysis with Python code execution
   - DTI calculations, trend analysis, risk scoring
@@ -329,11 +346,13 @@ To use Temporal Cloud instead of a local server:
 - **Separation of Concerns**:
   - Temporal activities handle durable execution and retry logic (outer loop)
   - Strands agents handle intelligent data fetching and validation (inner loop)
-- **Async Activity Completion Pattern**: Document processing demonstrates Temporal best practices:
-  - Loop in workflow (not activity) for better state management
-  - Durable timer sleep (`workflow.sleep()`) instead of blocking `sleep()`
-  - Each document gets independent retry policy
-  - Failed documents don't cause reprocessing of successful ones
+- **Fan-Out Parallel Processing Pattern**: Document processing demonstrates Temporal best practices:
+  - **Parallel execution**: `asyncio.gather()` processes all documents simultaneously
+  - **Helper method**: `_process_single_document()` encapsulates document lifecycle
+  - **Time-based polling**: Uses `workflow.now()` for timeout checks (no manual counters)
+  - **Durable timer sleep**: `workflow.sleep()` survives worker crashes and restarts
+  - **Fault isolation**: Each document has independent retry policy; failures don't affect others
+  - **State persistence**: Completed documents won't reprocess after workflow restart
   - 📄 [See detailed implementation](AGENTCORE_INTEGRATION.md#workflow-changes)
 - **Provider Fallback Pattern**: Temporal workflow orchestrates CIBIL → Experian fallback for credit reports
 - **Configurable LLM**: Support for both Ollama (local) and AWS Bedrock (cloud) models via environment variables

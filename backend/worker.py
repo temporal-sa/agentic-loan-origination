@@ -25,7 +25,8 @@ async def run_worker():
         workflows=[SupervisorWorkflow],
         activities=[
             activities.fetch_bank_account,
-            activities.fetch_documents,
+            activities.trigger_document_processing,
+            activities.check_document_status,
             activities.fetch_credit_report_cibil,
             activities.fetch_credit_report_experian,
             activities.income_assessment,

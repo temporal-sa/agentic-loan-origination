@@ -1,3 +1,4 @@
+import asyncio
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError
@@ -92,6 +93,103 @@ class SupervisorWorkflow:
             maximum_attempts=10
         )
 
+    async def _process_single_document(
+        self,
+        applicant_id: str,
+        doc_type: str,
+        local_path: str
+    ) -> Dict[str, Any]:
+        """
+        Process a single document with Bedrock Data Automation.
+
+        TEMPORAL PATTERN - ASYNC ACTIVITY WITH POLLING:
+        - Triggers async BDA processing
+        - Polls for completion using Temporal's durable timer sleep
+        - Each document processed independently in parallel
+        - Failures isolated to single document (won't affect others)
+
+        Args:
+            applicant_id: Applicant identifier
+            doc_type: Type of document (e.g., 'bank_statement', 'pay_stub')
+            local_path: Local file path to the document
+
+        Returns:
+            Processing result with status and extracted data
+        """
+        workflow.logger.info(f"Starting parallel processing for {doc_type}")
+
+        try:
+            # Step 1: Trigger async BDA processing
+            # Temporal's retry policy handles transient failures (network, S3, etc.)
+            trigger_result = await workflow.execute_activity(
+                "trigger_document_processing",
+                {
+                    "applicant_id": applicant_id,
+                    "doc_type": doc_type,
+                    "local_path": local_path
+                },
+                start_to_close_timeout=timedelta(seconds=120),
+                retry_policy=self._default_retry_policy
+            )
+
+            workflow.logger.info(f"Triggered BDA for {doc_type}: {trigger_result['invocation_arn']}")
+
+            # Step 2: Poll for completion using Temporal's durable timer sleep
+            # TEMPORAL NATIVE PATTERN:
+            # - Use workflow.sleep() for durable delays (survives restarts)
+            # - Use schedule_to_close_timeout at workflow level for max processing time
+            # - Temporal's timer sleep is durable (survives worker crashes)
+            # - No manual attempt counter needed - time-based with natural exit
+
+            max_wait_time = timedelta(minutes=10)
+            poll_interval = timedelta(seconds=10)
+            start_time = workflow.now()
+
+            while workflow.now() - start_time < max_wait_time:
+                # Check status using activity with short timeout
+                status_result = await workflow.execute_activity(
+                    "check_document_status",
+                    trigger_result,
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        initial_interval=timedelta(seconds=1),
+                        maximum_interval=timedelta(seconds=5)
+                    )
+                )
+
+                # Terminal states - break the loop
+                if status_result["status"] in ["success", "failed"]:
+                    workflow.logger.info(
+                        f"BDA processing completed for {doc_type}: {status_result['status']}"
+                    )
+                    return status_result
+
+                # Still in progress - use Temporal's durable timer sleep
+                elapsed = workflow.now() - start_time
+                workflow.logger.info(
+                    f"BDA processing {doc_type}: in progress "
+                    f"(elapsed: {elapsed.total_seconds():.0f}s), checking again in {poll_interval.total_seconds():.0f}s"
+                )
+                await workflow.sleep(poll_interval)
+
+            # Timeout reached
+            workflow.logger.error(f"BDA processing timeout for {doc_type} after {max_wait_time}")
+            return {
+                "doc_type": doc_type,
+                "status": "timeout",
+                "error": f"Processing exceeded maximum wait time of {max_wait_time}"
+            }
+
+        except ActivityError as e:
+            # Activity failed after all retry attempts
+            workflow.logger.error(f"Activity error processing {doc_type}: {e}")
+            return {
+                "doc_type": doc_type,
+                "status": "error",
+                "error": str(e)
+            }
+
     @workflow.run
     async def run(self, application: Dict[str, Any]):
         """
@@ -131,79 +229,30 @@ class SupervisorWorkflow:
 
         # Activity 2: Process documents with Bedrock Data Automation
         # ════════════════════════════════════════════════════════════
-        # KEY ARCHITECTURE PATTERN - ASYNC ACTIVITY COMPLETION:
-        # - Loop through documents in WORKFLOW (not activity)
-        # - Each document gets independent retry policy
-        # - Use Temporal's durable timer sleep for polling
-        # - Avoid reexecution: completed documents persist in workflow state
+        # KEY ARCHITECTURE PATTERN - FAN-OUT PARALLEL PROCESSING:
+        # - Fan-out: Launch all document processing tasks in parallel
+        # - Use asyncio.gather() for concurrent execution (Temporal-safe)
+        # - Each document processed independently with own retry policy
+        # - Workflow orchestrates parallel execution and aggregates results
         # ════════════════════════════════════════════════════════════
         document_paths = application.get("document_paths", {})
-        processed_documents = []
 
         if document_paths:
-            workflow.logger.info(f"Processing {len(document_paths)} documents with Bedrock Data Automation")
+            workflow.logger.info(f"Processing {len(document_paths)} documents in parallel with Bedrock Data Automation")
 
-            # Process each document independently
-            for doc_type, local_path in document_paths.items():
-                workflow.logger.info(f"Starting processing for {doc_type}")
+            # FAN-OUT: Create parallel tasks for each document
+            document_tasks = [
+                self._process_single_document(
+                    application["applicant_id"],
+                    doc_type,
+                    local_path
+                )
+                for doc_type, local_path in document_paths.items()
+            ]
 
-                try:
-                    # Step 1: Trigger async BDA processing
-                    trigger_result = await workflow.execute_activity(
-                        "trigger_document_processing",
-                        {
-                            "applicant_id": application["applicant_id"],
-                            "doc_type": doc_type,
-                            "local_path": local_path
-                        },
-                        start_to_close_timeout=timedelta(seconds=60),
-                        retry_policy=self._default_retry_policy
-                    )
-
-                    workflow.logger.info(f"Triggered BDA for {doc_type}: {trigger_result['invocation_arn']}")
-
-                    # Step 2: Poll for completion with durable timer sleep
-                    max_attempts = 60  # 10 minutes max (60 * 10 seconds)
-                    attempt = 0
-
-                    while attempt < max_attempts:
-                        # Check status using activity
-                        status_result = await workflow.execute_activity(
-                            "check_document_status",
-                            trigger_result,
-                            start_to_close_timeout=timedelta(seconds=30),
-                            retry_policy=RetryPolicy(maximum_attempts=3)
-                        )
-
-                        if status_result["status"] == "success":
-                            workflow.logger.info(f"BDA processing completed for {doc_type}")
-                            processed_documents.append(status_result)
-                            break
-                        elif status_result["status"] == "failed":
-                            workflow.logger.error(f"BDA processing failed for {doc_type}: {status_result.get('error')}")
-                            processed_documents.append(status_result)
-                            break
-                        else:
-                            # Still in progress - use durable timer sleep
-                            workflow.logger.info(f"BDA processing {doc_type}: in progress (attempt {attempt + 1}/{max_attempts})")
-                            await workflow.sleep(timedelta(seconds=10))
-                            attempt += 1
-
-                    if attempt >= max_attempts:
-                        workflow.logger.error(f"BDA processing timeout for {doc_type}")
-                        processed_documents.append({
-                            "doc_type": doc_type,
-                            "status": "timeout",
-                            "error": "Processing exceeded maximum wait time"
-                        })
-
-                except ActivityError as e:
-                    workflow.logger.error(f"Activity error processing {doc_type}: {e}")
-                    processed_documents.append({
-                        "doc_type": doc_type,
-                        "status": "error",
-                        "error": str(e)
-                    })
+            # Wait for all parallel document processing to complete
+            # Temporal ensures durability - even if workflow restarts, completed tasks won't re-execute
+            processed_documents = await asyncio.gather(*document_tasks)
 
             docs = {
                 "documents": processed_documents,
