@@ -304,8 +304,8 @@ class SupervisorWorkflow:
         )
         expense_task = workflow.execute_activity(
             "expense_assessment",
-            {"application": application, "bank": bank},
-            start_to_close_timeout=timedelta(seconds=90),
+            {"application": application, "bank": bank, "documents": docs},
+            start_to_close_timeout=timedelta(minutes=5),  # AgentCore needs more time
             retry_policy=self._default_retry_policy
         )
         credit_task = workflow.execute_activity(
