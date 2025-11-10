@@ -14,7 +14,8 @@ def get_model() -> BaseModel:
     
     elif provider == "aws-bedrock":
         return BedrockModel(
-            model_id=os.getenv("AWS_BEDROCK_MODEL", "au.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+            model_id=os.getenv("AWS_BEDROCK_MODEL", "anthropic.claude-3-5-sonnet-20240620-v1:0"),
+            region=os.getenv("AWS_REGION", "us-west-2")
         )
     
     else:

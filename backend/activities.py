@@ -85,7 +85,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
         activity.logger.info(f"Triggering BDA processing for {doc_type}: {local_path}")
 
         # Initialize AWS clients
-        region_name = os.getenv("AWS_REGION", "us-east-1")
+        region_name = os.getenv("AWS_REGION", "us-west-2")
         s3_client = boto3.client('s3', region_name=region_name)
         bda_runtime = boto3.client('bedrock-data-automation-runtime', region_name=region_name)
 
@@ -128,8 +128,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
             },
             outputConfiguration={
                 's3Uri': f's3://{bucket_name}/{s3_output_prefix}'
-            },
-            dataAutomationProfileArn=f'arn:aws:bedrock:{region_name}:aws:data-automation-profile/us.data-automation-v1'
+            }
         )
 
         invocation_arn = response['invocationArn']
@@ -181,7 +180,7 @@ async def check_document_status(payload: Dict[str, Any]) -> Dict[str, Any]:
         bucket_name = payload.get("bucket_name")
 
         # Initialize AWS clients
-        region_name = os.getenv("AWS_REGION", "us-east-1")
+        region_name = os.getenv("AWS_REGION", "us-west-2")
         s3_client = boto3.client('s3', region_name=region_name)
         bda_runtime = boto3.client('bedrock-data-automation-runtime', region_name=region_name)
 
