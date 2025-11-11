@@ -8,7 +8,7 @@ except:
     API_URL = "http://localhost:8000"
 
 st.set_page_config(
-    page_title="Intelligent Loan Underwriter",
+    page_title="Intelligent Loan Underwriter Copilot",
     page_icon="",
 )
 st.title("Intelligent Loan Underwriter — Demo")

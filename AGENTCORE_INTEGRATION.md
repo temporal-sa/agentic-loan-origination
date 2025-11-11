@@ -55,8 +55,8 @@ This document describes the integration of **AWS Bedrock AgentCore** and **Bedro
                 - Trend Analysis
                 - Risk Scoring
                 - Python Execution
-         │
-         ▼
+                       │
+                       ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              AGGREGATE & DECIDE (LLM Synthesis)                 │
 └────────────────────────────┬────────────────────────────────────┘

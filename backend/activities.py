@@ -128,7 +128,8 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
             },
             outputConfiguration={
                 's3Uri': f's3://{bucket_name}/{s3_output_prefix}'
-            }
+            },
+            dataAutomationProfileArn=f'arn:aws:bedrock:{region_name}:aws:data-automation-profile/us.data-automation-v1'
         )
 
         invocation_arn = response['invocationArn']
