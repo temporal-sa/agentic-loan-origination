@@ -5,11 +5,11 @@ import os
 import json
 from pathlib import Path
 from utilities import model
+from utilities.aws_client import get_s3_client, get_bedrock_data_automation_client
 from strands import Agent
 from strands.models.ollama import OllamaModel
 from strands_tools.code_interpreter import AgentCoreCodeInterpreter
 from classes.agents import DataFetchAgent, CreditReportAgent
-import boto3
 from botocore.exceptions import ClientError
 
 
@@ -84,10 +84,9 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
 
         activity.logger.info(f"Triggering BDA processing for {doc_type}: {local_path}")
 
-        # Initialize AWS clients
-        region_name = os.getenv("AWS_REGION", "us-west-2")
-        s3_client = boto3.client('s3', region_name=region_name)
-        bda_runtime = boto3.client('bedrock-data-automation-runtime', region_name=region_name)
+        # Initialize AWS clients with profile configuration
+        s3_client = get_s3_client()
+        bda_runtime = get_bedrock_data_automation_client()
 
         # Get S3 bucket
         bucket_name = os.getenv("AWS_S3_BUCKET")
@@ -129,7 +128,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
             outputConfiguration={
                 's3Uri': f's3://{bucket_name}/{s3_output_prefix}'
             },
-            dataAutomationProfileArn=f'arn:aws:bedrock:{region_name}:aws:data-automation-profile/us.data-automation-v1'
+            dataAutomationProfileArn=f'arn:aws:bedrock:{os.getenv("AWS_REGION", "us-west-2")}:aws:data-automation-profile/us.data-automation-v1'
         )
 
         invocation_arn = response['invocationArn']
@@ -180,10 +179,9 @@ async def check_document_status(payload: Dict[str, Any]) -> Dict[str, Any]:
         s3_key = payload.get("s3_key")
         bucket_name = payload.get("bucket_name")
 
-        # Initialize AWS clients
-        region_name = os.getenv("AWS_REGION", "us-west-2")
-        s3_client = boto3.client('s3', region_name=region_name)
-        bda_runtime = boto3.client('bedrock-data-automation-runtime', region_name=region_name)
+        # Initialize AWS clients with profile configuration
+        s3_client = get_s3_client()
+        bda_runtime = get_bedrock_data_automation_client()
 
         # Check status
         status_response = bda_runtime.get_data_automation_status(
