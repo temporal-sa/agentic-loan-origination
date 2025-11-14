@@ -12,15 +12,15 @@ This repository demonstrates an agentic loan underwriting system built with Temp
   - `DataFetchAgent`: Generic HTTP data fetching with validation
   - `CreditReportAgent`: Specialized credit report validation with multi-provider support
 - **Specialist Activities**: Mock data fetching (bank, documents, credit) and AI-powered assessments (income, expense, credit analysis)
-  - `trigger_document_processing`: Initiates async Bedrock Data Automation (BDA) processing per document
-  - `check_document_status`: Polls BDA status without blocking
-- **AWS Bedrock Data Automation**: Extracts structured data from documents (bank statements, IDs, payslips)
+  - `trigger_document_processing`: Processes documents using Ollama granite3.2-vision for OCR
+  - Synchronous document processing with structured JSON extraction
+- **Ollama granite3.2-vision**: Local vision model for document OCR (bank statements, IDs, payslips)
   - **Parallel fan-out processing**: All documents processed simultaneously
   - Uses `asyncio.gather()` for concurrent execution (Temporal-safe)
-  - Durable timer sleep with `workflow.now()` for time-based polling
+  - Document-specific prompts for accurate extraction
   - Independent retry policies and fault isolation per document
-  - State persistence ensures completed documents won't reprocess on failure
-  - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for detailed setup and usage
+  - Structured JSON output saved locally
+  - No cloud dependencies for document processing
 - **AWS Bedrock AgentCore**: Code Interpreter for sophisticated financial analysis (DTI, risk scoring, trend analysis)
   - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for implementation details
 - **Strands Integration**: Agent orchestration with structured output validation using Ollama or AWS Bedrock models
@@ -42,7 +42,7 @@ sequenceDiagram
 	participant DataAgent as DataFetchAgent
 	participant CreditAgent as CreditReportAgent
 	participant Mockoon as Mock APIs
-	participant BDA as AWS Bedrock Data Automation
+	participant Ollama as Ollama granite3.2-vision
 	participant LLM as LLM Provider (Ollama/Bedrock)
 
 	User->>Streamlit: Submit loan application
@@ -61,42 +61,26 @@ sequenceDiagram
 
 	par Document 1 (Bank Statement)
 		Supervisor->>Worker: _process_single_document(bank_stmt)
-		Worker->>BDA: trigger_document_processing → S3 upload
-		BDA-->>Worker: invocation_arn
-
-		loop Time-based Poll (max 10 min)
-			Note over Supervisor: workflow.now() checks elapsed time
-			Supervisor->>Supervisor: await workflow.sleep(10s)
-			Supervisor->>Worker: check_document_status(arn)
-			Worker->>BDA: get_data_automation_status()
-			alt Complete/Failed
-				BDA-->>Worker: Success/Failed + data
-				Worker-->>Supervisor: Return result
-			else In Progress
-				Note over Supervisor: Continue until timeout
-			end
-		end
+		Worker->>Ollama: trigger_document_processing (base64 + prompt)
+		Ollama-->>Worker: Extracted JSON data
+		Worker-->>Supervisor: Success + structured data
 
 	and Document 2 (ID Card)
 		Supervisor->>Worker: _process_single_document(id_card)
-		Worker->>BDA: trigger_document_processing
-		BDA-->>Worker: invocation_arn
-		Note over Supervisor, BDA: Independent polling with own timer
+		Worker->>Ollama: granite3.2-vision OCR
+		Ollama-->>Worker: License data (name, DOB, address)
+		Worker-->>Supervisor: Success + data
 
-	and Document 3 (Pay Stub)
-		Supervisor->>Worker: _process_single_document(pay_stub)
-		Worker->>BDA: trigger_document_processing
-		BDA-->>Worker: invocation_arn
+	and Document 3 (Salary Slip)
+		Supervisor->>Worker: _process_single_document(salary_slip)
+		Worker->>Ollama: granite3.2-vision OCR
+		Ollama-->>Worker: Salary, deductions, YTD
+		Worker-->>Supervisor: Success + data
 		Note over Supervisor: Each doc isolated - failures don't affect others
-
-	and Document 4 (Address Proof)
-		Supervisor->>Worker: _process_single_document(address)
-		Worker->>BDA: trigger_document_processing
-		BDA-->>Worker: invocation_arn
 	end
 
 	Note over Supervisor: asyncio.gather() waits for all docs
-	Note over Supervisor: Completed docs persist in workflow state
+	Note over Supervisor: All OCR processed locally, no cloud calls
 
 	Worker->>CreditAgent: fetch_credit_report_cibil(applicant_id)
 	CreditAgent->>Mockoon: HTTP GET /cibil?applicant_id=X
@@ -174,10 +158,13 @@ sequenceDiagram
 - **LLM Provider** (one of the following):
   - **Ollama**: Local installation with model (default: `llama3:latest`, configurable via `.env`)
   - **AWS Bedrock**: Access to AWS Bedrock service with API key and supported models (e.g., `au.anthropic.claude-sonnet-4-5-20250929-v1:0`)
-- **AWS Bedrock Data Automation** (for document processing):
-  - AWS account with Bedrock Data Automation enabled
-  - S3 bucket for temporary file storage
-  - BDA project ARN with blueprints: `bank-statement`, `us-driver-license`, `payslip`
+- **Ollama granite3.2-vision** (for document OCR):
+  - Ollama installed locally
+  - granite3.2-vision model: `ollama pull granite3.2-vision:latest`
+  - Processes bank statements, salary slips, and ID documents locally
+- **AWS Bedrock AgentCore** (optional, for advanced financial analysis):
+  - AWS account with Bedrock access for Code Interpreter
+  - Required IAM permissions: `bedrock:InvokeAgent`, `bedrock:InvokeCodeInterpreter`
 - **Mockoon**: Mock API server running on port 3233 (configuration available in `mockoon` folder)
 - **Python 3.9+**: Required for all dependencies
 - **Dependencies**: Install from `requirements.txt`
@@ -220,9 +207,9 @@ AWS_BEARER_TOKEN_BEDROCK=<your-api-key>
 AWS_REGION=<your-region>  # e.g., ap-southeast-2
 AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1:0
 
-# AWS Bedrock Data Automation Configuration (for document processing):
-AWS_S3_BUCKET=your-s3-bucket-name
-BEDROCK_DATA_AUTOMATION_PROJECT_ARN=arn:aws:bedrock:region:account:data-automation-project/project-id
+# Ollama granite3.2-vision for Document OCR:
+# Uses same OLLAMA_URL configured above
+# Install model: ollama pull granite3.2-vision:latest
 ```
 
 3. **Start required services:**
@@ -302,15 +289,15 @@ To use Temporal Cloud instead of a local server:
 
 ## Key Features
 - **Structured Data Validation**: Strands integration provides automatic validation of loan applications
-- **Parallel Document Processing**: AWS Bedrock Data Automation extracts structured data from documents with:
+- **Parallel Document Processing**: Ollama granite3.2-vision extracts structured data from documents with:
   - **Fan-out parallelism**: All documents processed simultaneously using `asyncio.gather()`
-  - **Time-based polling**: Uses `workflow.now()` instead of manual attempt counters
+  - **Synchronous processing**: Direct OCR without polling overhead
   - **Fault isolation**: Each document's failure won't affect others
-  - **Durable timer sleep**: Survives worker crashes and restarts
+  - **Local processing**: No cloud dependencies or S3 storage required
   - **Independent retry policies** per document
   - **State persistence** ensures completed documents won't reprocess on failure
-  - Support for bank statements, IDs, payslips, and address proof
-  - 📄 [Detailed documentation](AGENTCORE_INTEGRATION.md#2-bedrock-data-automation-ocr-step-2)
+  - Support for bank statements, IDs, and salary slips
+  - Document-specific prompts for accurate data extraction
 - **AgentCore Code Interpreter**: Sophisticated financial analysis with Python code execution
   - DTI calculations, trend analysis, risk scoring
   - 📄 [Implementation guide](AGENTCORE_INTEGRATION.md#3-agentcore-code-interpreter-step-3)
@@ -349,11 +336,10 @@ To use Temporal Cloud instead of a local server:
 - **Fan-Out Parallel Processing Pattern**: Document processing demonstrates Temporal best practices:
   - **Parallel execution**: `asyncio.gather()` processes all documents simultaneously
   - **Helper method**: `_process_single_document()` encapsulates document lifecycle
-  - **Time-based polling**: Uses `workflow.now()` for timeout checks (no manual counters)
-  - **Durable timer sleep**: `workflow.sleep()` survives worker crashes and restarts
+  - **Synchronous OCR**: Ollama granite3.2-vision processes documents directly
   - **Fault isolation**: Each document has independent retry policy; failures don't affect others
   - **State persistence**: Completed documents won't reprocess after workflow restart
-  - 📄 [See detailed implementation](AGENTCORE_INTEGRATION.md#workflow-changes)
+  - **Local processing**: No external cloud services needed for OCR
 - **Provider Fallback Pattern**: Temporal workflow orchestrates CIBIL → Experian fallback for credit reports
 - **Configurable LLM**: Support for both Ollama (local) and AWS Bedrock (cloud) models via environment variables
 - **Production Considerations**: Would require secure API integrations, authentication, and real data providers

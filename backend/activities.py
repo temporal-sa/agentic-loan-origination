@@ -1,16 +1,20 @@
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
-from typing import Dict, Any
+from typing import Dict, Any, List
 import os
 import json
 from pathlib import Path
 from utilities import model
-from utilities.aws_client import get_s3_client, get_bedrock_data_automation_client
 from strands import Agent
 from strands.models.ollama import OllamaModel
+from strands.types.content import ContentBlock
+from strands.types.media import ImageContent, ImageSource
 from strands_tools.code_interpreter import AgentCoreCodeInterpreter
 from classes.agents import DataFetchAgent, CreditReportAgent
-from botocore.exceptions import ClientError
+from document_prompts import get_prompt_for_document
+import base64
+import fitz  # PyMuPDF
+import io
 
 
 # ============================================================================
@@ -62,241 +66,255 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
         )
 
 
+def _convert_pdf_to_images(pdf_path: Path) -> List[bytes]:
+    """
+    Convert a multi-page PDF to a list of image bytes (one per page).
+
+    Args:
+        pdf_path: Path to the PDF file
+
+    Returns:
+        List of image bytes (PNG format), one for each page
+    """
+    images = []
+
+    # Open PDF with PyMuPDF
+    pdf_document = fitz.open(pdf_path)
+
+    try:
+        # Process each page
+        for page_num in range(len(pdf_document)):
+            page = pdf_document[page_num]
+
+            # Render page to image (300 DPI for good quality OCR)
+            # zoom=2 gives approximately 144 DPI, zoom=3 gives ~216 DPI
+            zoom = 2.0  # Adjust for quality vs file size tradeoff
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
+
+            # Convert to PNG bytes
+            img_bytes = pix.tobytes("png")
+            images.append(img_bytes)
+
+        return images
+
+    finally:
+        pdf_document.close()
+
+
 @activity.defn
 async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Trigger async BDA processing for a single document.
+    Process document using Ollama granite3.2-vision model for OCR.
 
     ARCHITECTURE NOTE:
-    - Temporal Activity: Triggers BDA processing and returns immediately
-    - Async Pattern: Returns invocation ARN for status polling in workflow
-    - This enables Temporal's durable timer sleep instead of blocking activity
+    - Temporal Activity: Provides durable execution
+    - Ollama granite3.2-vision: Vision model for document OCR
+    - Strands Agent: Orchestrates the vision model for structured data extraction
+    - PyMuPDF: Converts multi-page PDFs to images
 
     This activity:
-    - Uploads document to S3
-    - Invokes BDA async processing
-    - Returns invocation ARN for tracking
+    - Reads document from local file
+    - For PDFs: Converts each page to an image
+    - For images: Reads directly
+    - Sends all pages to Ollama granite3.2-vision via Strands
+    - Extracts structured JSON data from all pages
+    - Saves extracted JSON to local file
     """
     try:
         applicant_id = payload.get("applicant_id")
         doc_type = payload.get("doc_type")
         local_path = payload.get("local_path")
 
-        activity.logger.info(f"Triggering BDA processing for {doc_type}: {local_path}")
-
-        # Initialize AWS clients with profile configuration
-        s3_client = get_s3_client()
-        bda_runtime = get_bedrock_data_automation_client()
-
-        # Get S3 bucket
-        bucket_name = os.getenv("AWS_S3_BUCKET")
-        if not bucket_name:
-            activity.logger.warning("AWS_S3_BUCKET not set, using temporary bucket name")
-            bucket_name = f"loan-underwriter-temp-{applicant_id[:8]}"
-
-        # Get Data Automation project ARN
-        project_arn = os.getenv("BEDROCK_DATA_AUTOMATION_PROJECT_ARN")
-        if not project_arn:
-            raise ValueError("BEDROCK_DATA_AUTOMATION_PROJECT_ARN environment variable not set.")
+        activity.logger.info(f"Processing {doc_type} with Ollama granite3.2-vision: {local_path}")
 
         file_path = Path(local_path)
 
-        # Upload to S3
-        s3_key = f"loan-underwriter-temp/input/{applicant_id}/{file_path.name}"
-        s3_output_prefix = f"loan-underwriter-temp/output/{applicant_id}/{doc_type}"
+        # Verify file exists
+        if not file_path.exists():
+            raise FileNotFoundError(f"Document file not found: {local_path}")
 
+        # Get the appropriate prompt for this document type
         try:
-            with open(file_path, 'rb') as f:
-                s3_client.upload_fileobj(f, bucket_name, s3_key)
-            activity.logger.info(f"Uploaded {doc_type} to S3: s3://{bucket_name}/{s3_key}")
-        except Exception as upload_error:
-            raise ApplicationError(
-                f"S3 upload failed for {doc_type}: {str(upload_error)}",
-                type="S3UploadError",
-                non_retryable=False
+            ocr_prompt = get_prompt_for_document(doc_type)
+        except ValueError as e:
+            activity.logger.warning(f"Unknown document type {doc_type}, using generic OCR prompt")
+            ocr_prompt = "Extract all text and structured information from this document. Return the data as valid JSON."
+
+        # Determine file type and process accordingly
+        file_ext = file_path.suffix.lstrip('.').lower()
+
+        # Process based on file type
+        if file_ext == 'pdf':
+            activity.logger.info(f"Detected PDF file, converting to images...")
+
+            # Convert PDF pages to images
+            page_images = _convert_pdf_to_images(file_path)
+            num_pages = len(page_images)
+
+            activity.logger.info(f"PDF converted to {num_pages} page(s)")
+
+            # Initialize Strands agent with Ollama granite3.2-vision model
+            ollama_host = os.getenv("OLLAMA_URL", "http://localhost:11434")
+            ollama_vision_model = os.getenv("OLLAMA_VISION_MODEL", "granite3.2-vision:latest")
+            ollama_model = OllamaModel(
+                host=ollama_host,
+                model_id=ollama_vision_model
             )
 
-        # Invoke Bedrock Data Automation (async)
-        response = bda_runtime.invoke_data_automation_async(
-            dataAutomationConfiguration={
-                "dataAutomationProjectArn": project_arn,
-                "stage": "LIVE"
-            },
-            inputConfiguration={
-                's3Uri': f's3://{bucket_name}/{s3_key}'
-            },
-            outputConfiguration={
-                's3Uri': f's3://{bucket_name}/{s3_output_prefix}'
-            },
-            dataAutomationProfileArn=f'arn:aws:bedrock:{os.getenv("AWS_REGION", "us-west-2")}:aws:data-automation-profile/us.data-automation-v1'
-        )
+            agent = Agent(
+                model=ollama_model,
+                system_prompt="You are an expert OCR system. Extract structured data from documents and return valid JSON only. When processing multiple pages, combine all information into a single coherent JSON structure."
+            )
 
-        invocation_arn = response['invocationArn']
-        activity.logger.info(f"Started BDA processing for {doc_type}: {invocation_arn}")
+            # Create message content with all pages
+            message_content = []
+
+            # Add each page as an image
+            for page_num, img_bytes in enumerate(page_images, start=1):
+                # Use raw bytes for ImageSource (Strands expects a `bytes` field)
+                message_content.append(
+                    ContentBlock(
+                        image=ImageContent(
+                            format="png",
+                            source=ImageSource(
+                                bytes=img_bytes
+                            )
+                        )
+                    )
+                )
+                activity.logger.info(f"Added page {page_num}/{num_pages} to processing queue")
+
+            # Add the OCR prompt with multi-page context
+            multi_page_prompt = f"""This document has {num_pages} page(s). I've provided all pages in order.
+
+{ocr_prompt}
+
+IMPORTANT: Combine information from ALL pages into a single JSON structure. For example:
+- If there are transactions across multiple pages, merge them into a single transactions array
+- Ensure all data from all pages is included in the final output"""
+
+            message_content.append(
+                ContentBlock(
+                    type="text",
+                    text=multi_page_prompt
+                )
+            )
+
+        else:
+            # Handle single image files (jpg, png, etc.)
+            activity.logger.info(f"Processing single image file: {file_ext}")
+
+
+            # Read image bytes
+            with open(file_path, 'rb') as f:
+                image_data = f.read()
+
+            activity.logger.info(f"Image read, size: {len(image_data)} bytes")
+
+            # Initialize Strands agent with Ollama granite3.2-vision model
+            ollama_host = os.getenv("OLLAMA_URL", "http://localhost:11434")
+            ollama_vision_model = os.getenv("OLLAMA_VISION_MODEL", "granite3.2-vision:latest")
+            ollama_model = OllamaModel(
+                host=ollama_host,
+                model_id=ollama_vision_model
+            )
+
+            agent = Agent(
+                model=ollama_model,
+                system_prompt="You are an expert OCR system. Extract structured data from documents and return valid JSON only."
+            )
+
+            # Determine image format
+            if file_ext in ['jpg', 'jpeg']:
+                image_format = 'jpeg'
+            elif file_ext == 'png':
+                image_format = 'png'
+            elif file_ext == 'gif':
+                image_format = 'gif'
+            elif file_ext == 'webp':
+                image_format = 'webp'
+            else:
+                # Default to jpeg
+                image_format = 'jpeg'
+
+            # Create message with image using Strands ContentBlock format (raw bytes)
+            message_content = [
+                ContentBlock(
+                    image=ImageContent(
+                        format=image_format,
+                        source=ImageSource(
+                            bytes=image_data
+                        )
+                    )
+                ),
+                ContentBlock(
+                    text=ocr_prompt
+                )
+            ]
+
+        activity.logger.info("Invoking Ollama granite3.2-vision for OCR...")
+
+        # Execute OCR with vision model
+        response = agent(message_content)
+
+        # Extract response text
+        if hasattr(response, 'message') and response.message:
+            response_text = str(response.message.get("content", [{}])[0].get("text", ""))
+        else:
+            response_text = str(response)
+
+        activity.logger.info(f"OCR completed, response length: {len(response_text)} chars")
+
+        # Parse JSON from response
+        # Try to extract JSON from the response (model might include extra text)
+        try:
+            # First try direct JSON parse
+            extracted_data = json.loads(response_text)
+        except json.JSONDecodeError:
+            # Try to find JSON in the response
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                extracted_data = json.loads(json_match.group(0))
+            else:
+                activity.logger.error(f"Failed to parse JSON from response: {response_text[:500]}")
+                raise ValueError("Could not extract valid JSON from OCR response")
+
+        # Save JSON to local file
+        json_path = file_path.parent / f"{doc_type}_extracted.json"
+        with open(json_path, 'w') as f:
+            json.dump(extracted_data, f, indent=2)
+
+        activity.logger.info(f"Saved extracted data to {json_path}")
 
         return {
             "doc_type": doc_type,
-            "invocation_arn": invocation_arn,
-            "s3_key": s3_key,
-            "bucket_name": bucket_name,
-            "local_path": local_path,
-            "status": "triggered"
+            "status": "success",
+            "extracted_data": extracted_data,
+            "json_path": str(json_path),
+            "local_path": str(file_path),
+            "pages_processed": len(page_images) if file_ext == 'pdf' else 1
         }
 
-    except ClientError as e:
+    except FileNotFoundError as e:
         raise ApplicationError(
-            f"BDA invocation failed for {doc_type}: {str(e)}",
-            type="BDAInvocationError",
+            f"Document file not found for {doc_type}: {str(e)}",
+            type="FileNotFoundError",
+            non_retryable=True  # Don't retry if file doesn't exist
+        )
+    except json.JSONDecodeError as e:
+        raise ApplicationError(
+            f"Failed to parse OCR response as JSON for {doc_type}: {str(e)}",
+            type="JSONParseError",
             non_retryable=False
         )
     except Exception as e:
         raise ApplicationError(
-            f"Failed to trigger document processing: {str(e)}",
-            type="DocumentTriggerError",
+            f"Failed to process document {doc_type}: {str(e)}",
+            type="DocumentProcessingError",
             non_retryable=False
         )
-
-
-@activity.defn
-async def check_document_status(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Check status of BDA processing for a single document.
-
-    ARCHITECTURE NOTE:
-    - Temporal Activity: Checks current status (non-blocking)
-    - Called by workflow in a loop with durable timer sleep
-    - Returns status and extracted data when complete
-
-    This activity:
-    - Polls BDA status using invocation ARN
-    - Returns status: 'InProgress', 'Success', 'Failed', 'Cancelled'
-    - Retrieves and saves extracted data when successful
-    """
-    try:
-        invocation_arn = payload.get("invocation_arn")
-        doc_type = payload.get("doc_type")
-        local_path = payload.get("local_path")
-        s3_key = payload.get("s3_key")
-        bucket_name = payload.get("bucket_name")
-
-        # Initialize AWS clients with profile configuration
-        s3_client = get_s3_client()
-        bda_runtime = get_bedrock_data_automation_client()
-
-        # Check status
-        status_response = bda_runtime.get_data_automation_status(
-            invocationArn=invocation_arn
-        )
-
-        status = status_response['status']
-        activity.logger.info(f"BDA status for {doc_type}: {status}")
-
-        if status == 'Success':
-            # Retrieve and parse results
-            output_s3_uri = status_response['outputConfiguration']['s3Uri']
-            extracted_data = _retrieve_bda_results(s3_client, output_s3_uri)
-
-            # Save JSON to local uploads directory
-            file_path = Path(local_path)
-            json_path = file_path.parent / f"{doc_type}_extracted.json"
-            with open(json_path, 'w') as f:
-                json.dump(extracted_data, f, indent=2)
-
-            activity.logger.info(f"Saved extracted data to {json_path}")
-
-            # Clean up temporary S3 files
-            try:
-                s3_client.delete_object(Bucket=bucket_name, Key=s3_key)
-                activity.logger.info(f"Cleaned up temporary S3 file: {s3_key}")
-            except Exception as cleanup_error:
-                activity.logger.warning(f"Failed to cleanup S3 file: {cleanup_error}")
-
-            return {
-                "doc_type": doc_type,
-                "status": "success",
-                "extracted_data": extracted_data,
-                "json_path": str(json_path),
-                "local_file": str(file_path)
-            }
-
-        elif status in ['Failed', 'Cancelled']:
-            error_msg = status_response.get('errorMessage', 'Unknown error')
-            activity.logger.error(f"BDA processing failed for {doc_type}: {error_msg}")
-            return {
-                "doc_type": doc_type,
-                "status": "failed",
-                "error": error_msg
-            }
-
-        else:
-            # Still in progress
-            return {
-                "doc_type": doc_type,
-                "status": "in_progress"
-            }
-
-    except ClientError as e:
-        raise ApplicationError(
-            f"Failed to check BDA status for {doc_type}: {str(e)}",
-            type="BDAStatusCheckError",
-            non_retryable=False
-        )
-    except Exception as e:
-        raise ApplicationError(
-            f"Failed to check document status: {str(e)}",
-            type="DocumentStatusError",
-            non_retryable=False
-        )
-
-
-def _retrieve_bda_results(s3_client, s3_uri: str) -> Dict[str, Any]:
-    """
-    Helper function to retrieve and parse Bedrock Data Automation results from S3.
-
-    Args:
-        s3_client: boto3 S3 client
-        s3_uri: S3 URI of the output (s3://bucket/key)
-
-    Returns:
-        Parsed JSON containing extracted document data
-    """
-    # Parse S3 URI
-    parts = s3_uri.replace('s3://', '').split('/')
-    bucket = parts[0]
-    key = '/'.join(parts[1:])
-
-    # Fetch JSON from S3
-    response = s3_client.get_object(Bucket=bucket, Key=key)
-    job_result = json.loads(response['Body'].read())
-
-    # Extract structured data from BDA output
-    extracted_results = []
-
-    if 'output_metadata' in job_result:
-        for output_meta in job_result['output_metadata']:
-            segment_metadata = output_meta.get('segment_metadata', [])
-
-            for segment in segment_metadata:
-                custom_output_path = segment.get('custom_output_path')
-                if custom_output_path:
-                    # Fetch the custom output
-                    custom_parts = custom_output_path.replace('s3://', '').split('/')
-                    custom_bucket = custom_parts[0]
-                    custom_key = '/'.join(custom_parts[1:])
-
-                    custom_response = s3_client.get_object(Bucket=custom_bucket, Key=custom_key)
-                    custom_data = json.loads(custom_response['Body'].read())
-
-                    extracted_results.append({
-                        "matched_blueprint": custom_data.get("matched_blueprint"),
-                        "inference_result": custom_data.get("inference_result"),
-                        "confidence": custom_data.get("confidence_score")
-                    })
-
-    return {
-        "segments": extracted_results,
-        "raw_output": job_result
-    }
 
 
 @activity.defn
@@ -376,7 +394,7 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
     - Temporal Activity: Provides durable execution
     - AgentCore Code Interpreter: Executes Python code for financial calculations
     - Strands Agent: Orchestrates analysis with LLM reasoning
-    - Bedrock Data Automation: Extracted bank statement data (from fetch_documents)
+    - Ollama granite3.2-vision: Extracted bank statement data (from document processing)
 
     This replaces simple heuristics with:
     - DTI (Debt-to-Income) ratio analysis
@@ -392,12 +410,12 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         activity.logger.info("Starting income assessment with AgentCore Code Interpreter")
 
-        # Extract bank statement data from BDA results
+        # Extract bank statement data from Ollama OCR results
         bank_statement_data = None
         if docs and isinstance(docs, dict):
             processed_docs = docs.get("documents", [])
             for doc in processed_docs:
-                if doc.get("type") == "bank_statement" and doc.get("status") == "success":
+                if doc.get("doc_type") == "bank_statement" and doc.get("status") == "success":
                     bank_statement_data = doc.get("extracted_data", {})
                     activity.logger.info(f"Found extracted bank statement data: {bank_statement_data}")
                     break
@@ -438,7 +456,7 @@ Analyze this loan applicant's income profile and calculate a comprehensive risk 
 - Account Balance: ${bank.get('accounts', [{}])[0].get('balance', 0):,.2f if bank.get('accounts') else 0}
 - Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
 
-**Bank Statement Extracted Data (Bedrock Data Automation):**
+**Bank Statement Extracted Data (Ollama granite3.2-vision OCR):**
 {json.dumps(bank_statement_data, indent=2) if bank_statement_data else "No bank statement data available"}
 
 **Analysis Required:**
@@ -545,7 +563,7 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
     - Temporal Activity: Provides durable execution
     - AgentCore Code Interpreter: Executes Python code for spending pattern analysis
     - Strands Agent: Orchestrates behavioral analysis with LLM reasoning
-    - Bedrock Data Automation: Extracted bank statement data (from fetch_documents)
+    - Ollama granite3.2-vision: Extracted bank statement data (from document processing)
 
     This analyzes spending behavior and financial discipline:
     - Spending velocity and patterns
@@ -561,12 +579,12 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         activity.logger.info("Starting expense assessment with AgentCore Code Interpreter")
 
-        # Extract bank statement data from BDA results
+        # Extract bank statement data from Ollama OCR results
         bank_statement_data = None
         if docs and isinstance(docs, dict):
             processed_docs = docs.get("documents", [])
             for doc in processed_docs:
-                if doc.get("type") == "bank_statement" and doc.get("status") == "success":
+                if doc.get("doc_type") == "bank_statement" and doc.get("status") == "success":
                     bank_statement_data = doc.get("extracted_data", {})
                     activity.logger.info(f"Found bank statement for expense analysis")
                     break
@@ -607,7 +625,7 @@ Analyze this loan applicant's expense profile and spending behavior patterns:
 - Current Balance: ${bank.get('accounts', [{}])[0].get('balance', 0):,.2f if bank.get('accounts') else 0}
 - Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
 
-**Bank Statement Data (Extracted by Bedrock Data Automation):**
+**Bank Statement Data (Extracted by Ollama granite3.2-vision OCR):**
 {json.dumps(bank_statement_data, indent=2) if bank_statement_data else "No bank statement data available"}
 
 **Analysis Required:**

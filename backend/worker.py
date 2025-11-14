@@ -26,7 +26,7 @@ async def run_worker():
         activities=[
             activities.fetch_bank_account,
             activities.trigger_document_processing,
-            activities.check_document_status,
+            # activities.check_document_status,  # Removed - no longer needed with Ollama
             activities.fetch_credit_report_cibil,
             activities.fetch_credit_report_experian,
             activities.income_assessment,

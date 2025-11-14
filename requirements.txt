@@ -11,3 +11,4 @@ ollama
 boto3>=1.34.0
 python-multipart>=0.0.6
 bedrock-agentcore
+PyMuPDF>=1.23.0
