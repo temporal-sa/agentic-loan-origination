@@ -164,7 +164,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
 
             agent = Agent(
                 model=ollama_model,
-                system_prompt="You are an expert OCR system. Extract structured data from documents and return valid JSON only. When processing multiple pages, combine all information into a single coherent JSON structure."
+                system_prompt="You are an expert OCR system that carefully reads documents and extracts ACTUAL data. CRITICAL: You must extract the REAL data visible in the provided image/PDF, not placeholder or example data. When processing multiple pages, combine all information from ALL pages into a single coherent JSON structure. Return only valid JSON with the actual extracted data."
             )
 
             # Create message content with all pages
@@ -222,7 +222,7 @@ IMPORTANT: Combine information from ALL pages into a single JSON structure. For 
 
             agent = Agent(
                 model=ollama_model,
-                system_prompt="You are an expert OCR system. Extract structured data from documents and return valid JSON only."
+                system_prompt="You are an expert OCR system that carefully reads documents and extracts ACTUAL data. CRITICAL: You must extract the REAL data visible in the provided image, not placeholder or example data. Return only valid JSON with the actual extracted data."
             )
 
             # Determine image format
@@ -453,7 +453,7 @@ Analyze this loan applicant's income profile and calculate a comprehensive risk 
 - Monthly Expenses: ${app.get('expenses', 0):,.2f}
 
 **Bank Account Data:**
-- Account Balance: ${bank.get('accounts', [{}])[0].get('balance', 0):,.2f if bank.get('accounts') else 0}
+- Account Balance: ${f"{bank.get('accounts', [{}])[0].get('balance', 0):,.2f}" if bank.get('accounts') else "0.00"}
 - Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
 
 **Bank Statement Extracted Data (Ollama granite3.2-vision OCR):**
@@ -622,7 +622,7 @@ Analyze this loan applicant's expense profile and spending behavior patterns:
 - Requested Loan Amount: ${app.get('amount', 0):,.2f}
 
 **Bank Account Data:**
-- Current Balance: ${bank.get('accounts', [{}])[0].get('balance', 0):,.2f if bank.get('accounts') else 0}
+- Current Balance: ${f"{bank.get('accounts', [{}])[0].get('balance', 0):,.2f}" if bank.get('accounts') else "0.00"}
 - Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
 
 **Bank Statement Data (Extracted by Ollama granite3.2-vision OCR):**

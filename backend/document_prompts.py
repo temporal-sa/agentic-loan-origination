@@ -17,129 +17,209 @@ class DocumentType(Enum):
 
 # Prompt templates for each document type
 DOCUMENT_PROMPTS: Dict[str, str] = {
-    DocumentType.BANK_STATEMENT.value: """This is a bank statement that may span multiple pages. You are OCR software. You need to extract account holder name, account type, final balance, account number and array of ALL transactions from ALL pages. Final output will need to be JSON format.
+    DocumentType.BANK_STATEMENT.value: """You are an expert OCR system analyzing a bank statement image/PDF. Your task is to carefully read and extract ALL information from the ACTUAL document provided.
 
-Below is the sample example format:
+CRITICAL INSTRUCTIONS:
+1. READ THE ACTUAL DOCUMENT carefully - do NOT use placeholder or example data
+2. Extract REAL data you see in the image/PDF provided
+3. If this is a multi-page PDF, examine ALL pages and extract ALL transactions from every page
+4. Look at the actual text, numbers, and dates visible in the document
+5. Return ONLY the data you actually see in the provided document
 
+EXTRACT THE FOLLOWING FIELDS FROM THE ACTUAL DOCUMENT:
+
+Required fields:
+- account_holder_name: The actual customer/account holder name printed on the statement
+- account_type: Type of account (e.g., "SAVINGS", "CURRENT", "CHECKING")
+- account_number: The actual account number shown (may be partially masked like XXXXXX1234)
+- statement_period: The date range of the statement (e.g., "2024-01-01 to 2024-01-31")
+- opening_balance: The starting balance amount
+- final_balance: The ending/closing balance amount
+- total_credits: Sum of all credit/deposit transactions
+- total_debits: Sum of all debit/withdrawal transactions
+- transactions: Array of ALL transaction entries found across ALL pages
+
+For each transaction, extract:
+- date: Transaction date in YYYY-MM-DD format (or as shown in the document)
+- description: Transaction description/narration exactly as shown
+- type: "CREDIT" for deposits/incoming or "DEBIT" for withdrawals/outgoing
+- amount: Transaction amount as a number
+
+OUTPUT FORMAT:
+Return valid JSON with this structure (fill with ACTUAL data from the document):
 {
-  "account_holder_name": "Rahul Sharma",
-  "account_type": "SAVINGS",
-  "account_number": "XXXXXX1234",
-  "statement_period": "2025-09-01 to 2025-09-30",
-  "opening_balance": 25000.00,
-  "final_balance": 30550.25,
-  "total_credits": 15500.00,
-  "total_debits": 9950.00,
+  "account_holder_name": "<extract from document>",
+  "account_type": "<extract from document>",
+  "account_number": "<extract from document>",
+  "statement_period": "<extract from document>",
+  "opening_balance": <number>,
+  "final_balance": <number>,
+  "total_credits": <number>,
+  "total_debits": <number>,
   "transactions": [
     {
-      "date": "2025-09-02",
-      "description": "UPI/PhonePe/REF123456",
-      "type": "DEBIT",
-      "amount": 799.00
-    },
-    {
-      "date": "2025-09-05",
-      "description": "NEFT CREDIT SALARY ACME INDIA PVT LTD",
-      "type": "CREDIT",
-      "amount": 7500.00
+      "date": "<YYYY-MM-DD>",
+      "description": "<extract exact description>",
+      "type": "CREDIT or DEBIT",
+      "amount": <number>
     }
   ]
 }
 
-Instructions:
-- If this is a multi-page document, look at ALL pages and extract ALL transactions from every page
-- Combine transactions from all pages into a single transactions array, sorted by date
-- Extract ALL transactions visible across all pages of the statement
-- For transaction type, use "CREDIT" for deposits/credits and "DEBIT" for withdrawals/debits
-- Use the exact account holder name as shown on the statement
-- Include the statement period, opening balance, and final/closing balance
-- Calculate total credits and total debits across all transactions
-- Ensure no transactions are missed - check every page carefully
-- Return ONLY valid JSON, no additional text or explanation""",
+IMPORTANT REMINDERS:
+- Extract ALL transactions from ALL pages (if multi-page PDF)
+- Use the EXACT names, numbers, and dates you see in the document
+- DO NOT invent or use example data
+- If you cannot read a field clearly, extract your best reading of it
+- Return ONLY valid JSON, no additional text before or after""",
 
-    DocumentType.SALARY_SLIP.value: """This is a salary slip/pay stub that may span multiple pages. You are OCR software. You need to extract employee information, salary details, and deductions from ALL pages. Final output will need to be JSON format.
+    DocumentType.SALARY_SLIP.value: """You are an expert OCR system analyzing a salary slip/pay stub image/PDF. Your task is to carefully read and extract ALL information from the ACTUAL document provided.
 
-Below is the sample example format:
+CRITICAL INSTRUCTIONS:
+1. READ THE ACTUAL DOCUMENT carefully - do NOT use placeholder or example data
+2. Extract REAL data you see in the image/PDF provided
+3. If this is a multi-page PDF, review ALL pages to extract complete information
+4. Look at the actual text, numbers, and dates visible in the document
+5. Return ONLY the data you actually see in the provided document
 
+EXTRACT THE FOLLOWING FIELDS FROM THE ACTUAL DOCUMENT:
+
+Required employee information:
+- employee_name: The actual employee name printed on the slip
+- employee_id: Employee ID/number (if shown)
+- employer_name: Company/employer name
+- pay_period: Pay period (e.g., "October 2024", "01/10/2024 - 31/10/2024")
+- payment_date: Date of payment (if shown)
+
+Required salary breakdown:
+- gross_salary: Total salary before deductions
+- earnings: Object containing breakdown of all earning components you find:
+  * basic_salary: Basic pay component
+  * house_rent_allowance: HRA component (if present)
+  * special_allowance: Any special allowances (if present)
+  * bonus: Bonus amount (if present)
+  * other allowances: Any other earnings you see
+- deductions: Object containing breakdown of all deduction components you find:
+  * tax: Income tax/TDS deducted (if present)
+  * provident_fund: PF/EPF deduction (if present)
+  * health_insurance: Medical/health insurance (if present)
+  * professional_tax: Professional tax (if present)
+  * other: Any other deductions you see
+- total_deductions: Sum of all deductions
+- net_salary: Take-home pay (gross - deductions)
+
+Optional if available:
+- year_to_date: YTD earnings (if shown)
+
+OUTPUT FORMAT:
+Return valid JSON with this structure (fill with ACTUAL data from the document):
 {
-  "employee_name": "Priya Patel",
-  "employee_id": "EMP12345",
-  "employer_name": "Tech Solutions Inc",
-  "pay_period": "October 2024",
-  "pay_date": "2024-10-31",
-  "gross_salary": 85000.00,
+  "employee_name": "<extract from document>",
+  "employee_id": "<extract from document or null>",
+  "employer_name": "<extract from document>",
+  "pay_period": "<extract from document>",
+  "payment_date": "<extract from document or null>",
+  "gross_salary": <number>,
   "earnings": {
-    "basic_salary": 50000.00,
-    "house_rent_allowance": 20000.00,
-    "special_allowance": 10000.00,
-    "bonus": 5000.00
+    "basic_salary": <number>,
+    "house_rent_allowance": <number or null>,
+    "special_allowance": <number or null>,
+    "bonus": <number or null>
   },
   "deductions": {
-    "tax": 17000.00,
-    "provident_fund": 10200.00,
-    "health_insurance": 2500.00,
-    "other": 1000.00
+    "tax": <number or null>,
+    "provident_fund": <number or null>,
+    "health_insurance": <number or null>,
+    "professional_tax": <number or null>,
+    "other": <number or null>
   },
-  "total_deductions": 30700.00,
-  "net_salary": 54300.00,
-  "year_to_date_gross": 850000.00,
-  "year_to_date_net": 543000.00
+  "total_deductions": <number>,
+  "net_salary": <number>,
+  "year_to_date": <number or null>
 }
 
-Instructions:
-- If this is a multi-page document, review ALL pages to extract complete information
-- Extract employee name, ID, and employer information
-- Extract the pay period and payment date
-- Extract gross salary (before deductions)
-- Break down all earnings by category (basic, allowances, bonuses, etc.)
-- Break down all deductions by category (tax, PF, insurance, etc.)
-- Calculate or extract total deductions
-- Extract net salary (take-home pay)
-- Include year-to-date (YTD) figures if available
-- All monetary amounts should be in numerical format (no currency symbols in the numbers)
-- Ensure all data from all pages is included in the final JSON
-- Return ONLY valid JSON, no additional text or explanation""",
+IMPORTANT REMINDERS:
+- Extract data from ALL pages if multi-page document
+- Use the EXACT names, numbers, and dates you see in the document
+- DO NOT invent or use example data
+- All monetary amounts should be numbers without currency symbols
+- If a field is not visible, use null
+- Ensure gross_salary - total_deductions = net_salary matches the document
+- Return ONLY valid JSON, no additional text before or after""",
 
-    DocumentType.ID_PROOF.value: """This is a US driver's license. You are OCR software. You need to extract personal identification information from this document. Final output will need to be JSON format.
+    DocumentType.ID_PROOF.value: """You are an expert OCR system analyzing a US driver's license or ID card image. Your task is to carefully read and extract ALL information from the ACTUAL document provided.
 
-Below is the sample example format:
+CRITICAL INSTRUCTIONS:
+1. READ THE ACTUAL DOCUMENT carefully - do NOT use placeholder or example data
+2. Extract REAL data you see in the image provided
+3. Look at the actual text, numbers, and dates visible on the license/ID
+4. Return ONLY the data you actually see in the provided document
 
+EXTRACT THE FOLLOWING FIELDS FROM THE ACTUAL DOCUMENT:
+
+Required identification fields:
+- document_type: Type of document (e.g., "US_DRIVERS_LICENSE", "STATE_ID", "ID_CARD")
+- full_name: Complete legal name exactly as shown
+- first_name: First name component
+- middle_name: Middle name or initial (if present)
+- last_name: Last name/surname
+- license_number: License/ID number exactly as printed
+- state: Issuing state/jurisdiction
+- date_of_birth: Birth date in YYYY-MM-DD format
+- issue_date: Date issued in YYYY-MM-DD format
+- expiration_date: Expiration date in YYYY-MM-DD format
+
+Address information:
+- address: Complete address as shown (extract as object with street, city, state, zip_code)
+
+Physical characteristics (if shown):
+- sex: Gender marker (M/F/X)
+- height: Height as shown
+- weight: Weight as shown (if present)
+- eye_color: Eye color code (e.g., BRN, BLU, GRN)
+- hair_color: Hair color (if shown)
+
+License details (if applicable):
+- license_class: License class (e.g., "C", "D", "CDL")
+- restrictions: Any restrictions codes (if shown)
+- endorsements: Any endorsement codes (if shown)
+
+OUTPUT FORMAT:
+Return valid JSON with this structure (fill with ACTUAL data from the document):
 {
-  "document_type": "US_DRIVERS_LICENSE",
-  "full_name": "John Michael Smith",
-  "first_name": "John",
-  "middle_name": "Michael",
-  "last_name": "Smith",
-  "date_of_birth": "1985-03-15",
-  "license_number": "D1234567",
-  "state": "California",
+  "document_type": "<extract from document>",
+  "full_name": "<extract from document>",
+  "first_name": "<extract from document>",
+  "middle_name": "<extract from document or null>",
+  "last_name": "<extract from document>",
+  "license_number": "<extract from document>",
+  "state": "<extract from document>",
+  "date_of_birth": "<YYYY-MM-DD>",
   "address": {
-    "street": "123 Main Street",
-    "city": "Los Angeles",
-    "state": "CA",
-    "zip_code": "90001"
+    "street": "<extract from document>",
+    "city": "<extract from document>",
+    "state": "<state abbreviation>",
+    "zip_code": "<extract from document>"
   },
-  "issue_date": "2020-03-15",
-  "expiration_date": "2028-03-15",
-  "sex": "M",
-  "height": "5'10\"",
-  "weight": "170 lbs",
-  "eye_color": "BRN",
-  "restrictions": "NONE",
-  "class": "C"
+  "issue_date": "<YYYY-MM-DD>",
+  "expiration_date": "<YYYY-MM-DD>",
+  "sex": "<M/F/X>",
+  "height": "<extract as shown>",
+  "weight": "<extract as shown or null>",
+  "eye_color": "<extract from document>",
+  "hair_color": "<extract from document or null>",
+  "license_class": "<extract from document or null>",
+  "restrictions": "<extract from document or null>",
+  "endorsements": "<extract from document or null>"
 }
 
-Instructions:
-- Extract the full legal name and break it into first, middle, and last name components
-- Extract date of birth in YYYY-MM-DD format
-- Extract license number exactly as shown
-- Extract the issuing state
-- Extract complete address including street, city, state, and ZIP code
-- Extract issue date and expiration date in YYYY-MM-DD format
-- Extract physical characteristics: sex, height, weight, eye color
-- Extract license class and any restrictions
-- Return ONLY valid JSON, no additional text or explanation
-- If any field is not visible or not present, use null for that field"""
+IMPORTANT REMINDERS:
+- Use the EXACT text, numbers, and dates you see in the document
+- DO NOT invent or use example data
+- If a field is not visible or not present on the document, use null
+- Pay attention to date formats on the document and convert to YYYY-MM-DD
+- Extract address components carefully (street, city, state, zip)
+- Return ONLY valid JSON, no additional text before or after"""
 }
 
 

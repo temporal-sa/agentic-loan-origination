@@ -254,13 +254,13 @@ class SupervisorWorkflow:
         income_task = workflow.execute_activity(
             "income_assessment",
             {"application": application, "bank": bank, "credit": credit, "documents": docs},
-            start_to_close_timeout=timedelta(minutes=5),  # AgentCore needs more time
+            start_to_close_timeout=timedelta(minutes=10),  # AgentCore needs more time
             retry_policy=self._default_retry_policy
         )
         expense_task = workflow.execute_activity(
             "expense_assessment",
             {"application": application, "bank": bank, "documents": docs},
-            start_to_close_timeout=timedelta(minutes=5),  # AgentCore needs more time
+            start_to_close_timeout=timedelta(minutes=10),  # AgentCore needs more time
             retry_policy=self._default_retry_policy
         )
         credit_task = workflow.execute_activity(
