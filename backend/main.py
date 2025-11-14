@@ -33,7 +33,7 @@ class LoanApplication(BaseModel):
     amount: float = Field(description="Requested loan amount")
     income: Optional[float] = Field(default=None, description="Monthly income of the applicant")
     expenses: Optional[float] = Field(default=None, description="Monthly expenses of the applicant")
-    document_paths: Optional[dict] = Field(default=None, description="Paths to uploaded documents (bank_statement, proof_of_id, proof_of_income, proof_of_address)")
+    document_paths: Optional[dict] = Field(default=None, description="Paths to uploaded documents (bank_statement, proof_of_id, proof_of_income)")
 
 
 @app.post("/submit")
@@ -76,14 +76,14 @@ async def submit_application(app_data: dict):
 @app.post("/upload/{workflow_id}")
 async def upload_documents(
     workflow_id: str,
-    bank_statement: UploadFile = File(...),
-    proof_of_id: UploadFile = File(...),
-    proof_of_income: UploadFile = File(...),
-    proof_of_address: UploadFile = File(...)
+    bank_statement: Optional[UploadFile] = File(None),
+    proof_of_id: Optional[UploadFile] = File(None),
+    proof_of_income: Optional[UploadFile] = File(None)
 ):
     """
     Upload documents for a loan application workflow.
     Creates a directory structure: backend/uploads/{workflow_id}/
+    All documents are optional.
     """
     try:
         # Get the backend directory path
@@ -96,12 +96,11 @@ async def upload_documents(
         # Dictionary to track uploaded files
         uploaded_files = {}
 
-        # Upload each document
+        # Upload each document (only if provided)
         documents = {
             "bank_statement": bank_statement,
             "proof_of_id": proof_of_id,
-            "proof_of_income": proof_of_income,
-            "proof_of_address": proof_of_address
+            "proof_of_income": proof_of_income
         }
 
         for doc_type, file in documents.items():
