@@ -33,7 +33,7 @@ class LoanApplication(BaseModel):
     amount: float = Field(description="Requested loan amount")
     income: Optional[float] = Field(default=None, description="Monthly income of the applicant")
     expenses: Optional[float] = Field(default=None, description="Monthly expenses of the applicant")
-    document_paths: Optional[dict] = Field(default=None, description="Paths to uploaded documents (bank_statement, proof_of_id, proof_of_income)")
+    document_paths: Optional[dict] = Field(default=None, description="Paths to uploaded documents (bank_statement, proof_of_id)")
 
 
 @app.post("/submit")
@@ -77,8 +77,7 @@ async def submit_application(app_data: dict):
 async def upload_documents(
     workflow_id: str,
     bank_statement: Optional[UploadFile] = File(None),
-    proof_of_id: Optional[UploadFile] = File(None),
-    proof_of_income: Optional[UploadFile] = File(None)
+    proof_of_id: Optional[UploadFile] = File(None)
 ):
     """
     Upload documents for a loan application workflow.
@@ -99,8 +98,7 @@ async def upload_documents(
         # Upload each document (only if provided)
         documents = {
             "bank_statement": bank_statement,
-            "proof_of_id": proof_of_id,
-            "proof_of_income": proof_of_income
+            "proof_of_id": proof_of_id
         }
 
         for doc_type, file in documents.items():

@@ -100,26 +100,26 @@ class SupervisorWorkflow:
         local_path: str
     ) -> Dict[str, Any]:
         """
-        Process a single document with Ollama granite3.2-vision.
+        Process a single document with AWS Bedrock Nova Pro.
 
         TEMPORAL PATTERN - SYNCHRONOUS ACTIVITY:
-        - Processes document synchronously using Ollama
+        - Processes document synchronously using AWS Bedrock Nova Pro
         - Each document processed independently in parallel
         - Failures isolated to single document (won't affect others)
         - No polling needed - returns immediately with results
 
         Args:
             applicant_id: Applicant identifier
-            doc_type: Type of document (e.g., 'bank_statement', 'salary_slip', 'id_proof')
+            doc_type: Type of document (e.g., 'bank_statement', 'id_proof')
             local_path: Local file path to the document
 
         Returns:
             Processing result with status and extracted data
         """
-        workflow.logger.info(f"Starting OCR processing for {doc_type} with Ollama granite3.2-vision")
+        workflow.logger.info(f"Starting OCR processing for {doc_type} with AWS Bedrock Nova Pro")
 
         try:
-            # Process document with Ollama granite3.2-vision
+            # Process document with AWS Bedrock Nova Pro
             # Temporal's retry policy handles transient failures
             result = await workflow.execute_activity(
                 "trigger_document_processing",
@@ -128,7 +128,7 @@ class SupervisorWorkflow:
                     "doc_type": doc_type,
                     "local_path": local_path
                 },
-                start_to_close_timeout=timedelta(minutes=5),  # Vision models may take longer
+                start_to_close_timeout=timedelta(minutes=15),  # Vision models may take longer
                 retry_policy=self._default_retry_policy
             )
 
@@ -181,19 +181,19 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
-        # Activity 2: Process documents with Ollama granite3.2-vision
+        # Activity 2: Process documents with AWS Bedrock Nova Pro
         # ════════════════════════════════════════════════════════════
         # KEY ARCHITECTURE PATTERN - FAN-OUT PARALLEL PROCESSING:
         # - Fan-out: Launch all document processing tasks in parallel
         # - Use asyncio.gather() for concurrent execution (Temporal-safe)
         # - Each document processed independently with own retry policy
         # - Workflow orchestrates parallel execution and aggregates results
-        # - Ollama granite3.2-vision extracts structured data synchronously
+        # - AWS Bedrock Nova Pro extracts structured data synchronously
         # ════════════════════════════════════════════════════════════
         document_paths = application.get("document_paths", {})
 
         if document_paths:
-            workflow.logger.info(f"Processing {len(document_paths)} documents in parallel with Ollama granite3.2-vision")
+            workflow.logger.info(f"Processing {len(document_paths)} documents in parallel with AWS Bedrock Nova Pro")
 
             # FAN-OUT: Create parallel tasks for each document
             document_tasks = [
@@ -254,13 +254,13 @@ class SupervisorWorkflow:
         income_task = workflow.execute_activity(
             "income_assessment",
             {"application": application, "bank": bank, "credit": credit, "documents": docs},
-            start_to_close_timeout=timedelta(minutes=10),  # AgentCore needs more time
+            start_to_close_timeout=timedelta(minutes=15),  # AgentCore needs more time
             retry_policy=self._default_retry_policy
         )
         expense_task = workflow.execute_activity(
             "expense_assessment",
             {"application": application, "bank": bank, "documents": docs},
-            start_to_close_timeout=timedelta(minutes=10),  # AgentCore needs more time
+            start_to_close_timeout=timedelta(minutes=15),  # AgentCore needs more time
             retry_policy=self._default_retry_policy
         )
         credit_task = workflow.execute_activity(

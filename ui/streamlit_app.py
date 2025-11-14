@@ -14,7 +14,7 @@ st.set_page_config(
 st.title("Intelligent Loan Underwriter — Demo")
 
 tab = st.tabs(["Submit", "Review", "Workflows"])
-
+st.set_page_config(layout="wide")
 
 with tab[0]:
     with st.form("submit_form"):
@@ -31,7 +31,6 @@ with tab[0]:
 
         bank_statement = st.file_uploader("Bank Statement (required)", type=["jpg", "jpeg", "png", "pdf"], key="bank_statement")
         proof_of_id = st.file_uploader("Proof of ID (optional)", type=["jpg", "jpeg", "png", "pdf"], key="proof_of_id")
-        proof_of_income = st.file_uploader("Proof of Income (optional)", type=["jpg", "jpeg", "png", "pdf"], key="proof_of_income")
 
         submitted = st.form_submit_button("Submit Application")
 
@@ -58,8 +57,6 @@ with tab[0]:
                 files["bank_statement"] = ("bank_statement" + bank_statement.name[bank_statement.name.rfind('.'):], bank_statement, bank_statement.type)
             if proof_of_id:
                 files["proof_of_id"] = ("proof_of_id" + proof_of_id.name[proof_of_id.name.rfind('.'):], proof_of_id, proof_of_id.type)
-            if proof_of_income:
-                files["proof_of_income"] = ("proof_of_income" + proof_of_income.name[proof_of_income.name.rfind('.'):], proof_of_income, proof_of_income.type)
 
             # Only upload if at least one file is provided
             if files:

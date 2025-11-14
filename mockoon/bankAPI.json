@@ -116,7 +116,7 @@
           "callbacks": []
         }
       ],
-      "responseMode": "RANDOM",
+      "responseMode": null,
       "streamingMode": null,
       "streamingInterval": 0
     },

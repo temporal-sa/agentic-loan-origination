@@ -1,20 +1,17 @@
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
-from typing import Dict, Any, List
+from typing import Dict, Any
 import os
 import json
 from pathlib import Path
 from utilities import model
 from strands import Agent
-from strands.models.ollama import OllamaModel
-from strands.types.content import ContentBlock
-from strands.types.media import ImageContent, ImageSource
 from strands_tools.code_interpreter import AgentCoreCodeInterpreter
 from classes.agents import DataFetchAgent, CreditReportAgent
 from document_prompts import get_prompt_for_document
 import base64
-import fitz  # PyMuPDF
 import io
+import boto3
 
 
 # ============================================================================
@@ -66,59 +63,20 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
         )
 
 
-def _convert_pdf_to_images(pdf_path: Path) -> List[bytes]:
-    """
-    Convert a multi-page PDF to a list of image bytes (one per page).
-
-    Args:
-        pdf_path: Path to the PDF file
-
-    Returns:
-        List of image bytes (PNG format), one for each page
-    """
-    images = []
-
-    # Open PDF with PyMuPDF
-    pdf_document = fitz.open(pdf_path)
-
-    try:
-        # Process each page
-        for page_num in range(len(pdf_document)):
-            page = pdf_document[page_num]
-
-            # Render page to image (300 DPI for good quality OCR)
-            # zoom=2 gives approximately 144 DPI, zoom=3 gives ~216 DPI
-            zoom = 2.0  # Adjust for quality vs file size tradeoff
-            mat = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=mat)
-
-            # Convert to PNG bytes
-            img_bytes = pix.tobytes("png")
-            images.append(img_bytes)
-
-        return images
-
-    finally:
-        pdf_document.close()
-
-
 @activity.defn
 async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Process document using Ollama granite3.2-vision model for OCR.
+    Process a single image document using AWS Bedrock Nova Pro vision model for OCR.
 
     ARCHITECTURE NOTE:
     - Temporal Activity: Provides durable execution
-    - Ollama granite3.2-vision: Vision model for document OCR
-    - Strands Agent: Orchestrates the vision model for structured data extraction
-    - PyMuPDF: Converts multi-page PDFs to images
+    - AWS Bedrock Nova Pro: Vision model for document OCR
+    - Bedrock Runtime API: Direct invocation for structured data extraction
 
     This activity:
-    - Reads document from local file
-    - For PDFs: Converts each page to an image
-    - For images: Reads directly
-    - Sends all pages to Ollama granite3.2-vision via Strands
-    - Extracts structured JSON data from all pages
+    - Reads a single image from local file
+    - Sends image to AWS Bedrock Nova Pro via Bedrock Runtime API
+    - Extracts structured JSON data
     - Saves extracted JSON to local file
     """
     try:
@@ -126,7 +84,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
         doc_type = payload.get("doc_type")
         local_path = payload.get("local_path")
 
-        activity.logger.info(f"Processing {doc_type} with Ollama granite3.2-vision: {local_path}")
+        activity.logger.info(f"Processing {doc_type} with AWS Bedrock Nova Pro: {local_path}")
 
         file_path = Path(local_path)
 
@@ -141,128 +99,86 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
             activity.logger.warning(f"Unknown document type {doc_type}, using generic OCR prompt")
             ocr_prompt = "Extract all text and structured information from this document. Return the data as valid JSON."
 
-        # Determine file type and process accordingly
+        # Determine file type
         file_ext = file_path.suffix.lstrip('.').lower()
 
-        # Process based on file type
-        if file_ext == 'pdf':
-            activity.logger.info(f"Detected PDF file, converting to images...")
+        # Only accept image files
+        supported_formats = ['jpg', 'jpeg', 'png', 'gif', 'webp']
+        if file_ext not in supported_formats:
+            raise ValueError(f"Unsupported file format: {file_ext}. Only image files are supported: {', '.join(supported_formats)}")
 
-            # Convert PDF pages to images
-            page_images = _convert_pdf_to_images(file_path)
-            num_pages = len(page_images)
+        activity.logger.info(f"Processing single image file: {file_ext}")
 
-            activity.logger.info(f"PDF converted to {num_pages} page(s)")
+        # Read image bytes
+        with open(file_path, 'rb') as f:
+            image_data = f.read()
 
-            # Initialize Strands agent with Ollama granite3.2-vision model
-            ollama_host = os.getenv("OLLAMA_URL", "http://localhost:11434")
-            ollama_vision_model = os.getenv("OLLAMA_VISION_MODEL", "granite3.2-vision:latest")
-            ollama_model = OllamaModel(
-                host=ollama_host,
-                model_id=ollama_vision_model
-            )
+        activity.logger.info(f"Image read, size: {len(image_data)} bytes")
 
-            agent = Agent(
-                model=ollama_model,
-                system_prompt="You are an expert OCR system that carefully reads documents and extracts ACTUAL data. CRITICAL: You must extract the REAL data visible in the provided image/PDF, not placeholder or example data. When processing multiple pages, combine all information from ALL pages into a single coherent JSON structure. Return only valid JSON with the actual extracted data."
-            )
+        # Base64 encode the image data for JSON serialization
+        import base64
+        image_data_b64 = base64.b64encode(image_data).decode('utf-8')
 
-            # Create message content with all pages
-            message_content = []
+        # Initialize AWS Bedrock Runtime client
+        import boto3
+        from utilities.aws_client import get_aws_session
 
-            # Add each page as an image
-            for page_num, img_bytes in enumerate(page_images, start=1):
-                # Use raw bytes for ImageSource (Strands expects a `bytes` field)
-                message_content.append(
-                    ContentBlock(
-                        image=ImageContent(
-                            format="png",
-                            source=ImageSource(
-                                bytes=img_bytes
-                            )
-                        )
-                    )
-                )
-                activity.logger.info(f"Added page {page_num}/{num_pages} to processing queue")
+        session = get_aws_session()
+        bedrock_runtime = session.client(
+            service_name='bedrock-runtime',
+            region_name=os.getenv("AWS_REGION", "us-west-2")
+        )
 
-            # Add the OCR prompt with multi-page context
-            multi_page_prompt = f"""This document has {num_pages} page(s). I've provided all pages in order.
+        # Use the Nova Pro inference profile ARN from your working CLI command
+        model_id = os.getenv(
+            "AWS_BEDROCK_NOVA_MODEL_ID",
+            "arn:aws:bedrock:us-west-2:1111111111:inference-profile/us.amazon.nova-pro-v1:0"
+        )
 
-{ocr_prompt}
+        activity.logger.info(f"Invoking AWS Bedrock Nova Pro for OCR with model: {model_id}")
 
-IMPORTANT: Combine information from ALL pages into a single JSON structure. For example:
-- If there are transactions across multiple pages, merge them into a single transactions array
-- Ensure all data from all pages is included in the final output"""
+        # Prepare the request body matching your working CLI command
+        request_body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "text": ocr_prompt
+                        },
+                        {
+                            "image": {
+                                "format": file_ext if file_ext in ['png', 'jpeg', 'gif', 'webp'] else 'jpeg',
+                                "source": {
+                                    "bytes": image_data_b64
+                                }
+                            }
+                        }
+                    ]
+                }
+            ],
+            "inferenceConfig": {
+                "maxTokens": 2560,
+                "stopSequences": [],
+                "temperature": 1,
+                "topP": 1
+            }
+        }
 
-            message_content.append(
-                ContentBlock(
-                    type="text",
-                    text=multi_page_prompt
-                )
-            )
+        # Invoke Bedrock model
+        response = bedrock_runtime.invoke_model(
+            modelId=model_id,
+            body=json.dumps(request_body),
+            contentType="application/json",
+            accept="application/json"
+        )
 
-        else:
-            # Handle single image files (jpg, png, etc.)
-            activity.logger.info(f"Processing single image file: {file_ext}")
+        # Parse response
+        response_body = json.loads(response['body'].read())
 
-
-            # Read image bytes
-            with open(file_path, 'rb') as f:
-                image_data = f.read()
-
-            activity.logger.info(f"Image read, size: {len(image_data)} bytes")
-
-            # Initialize Strands agent with Ollama granite3.2-vision model
-            ollama_host = os.getenv("OLLAMA_URL", "http://localhost:11434")
-            ollama_vision_model = os.getenv("OLLAMA_VISION_MODEL", "granite3.2-vision:latest")
-            ollama_model = OllamaModel(
-                host=ollama_host,
-                model_id=ollama_vision_model
-            )
-
-            agent = Agent(
-                model=ollama_model,
-                system_prompt="You are an expert OCR system that carefully reads documents and extracts ACTUAL data. CRITICAL: You must extract the REAL data visible in the provided image, not placeholder or example data. Return only valid JSON with the actual extracted data."
-            )
-
-            # Determine image format
-            if file_ext in ['jpg', 'jpeg']:
-                image_format = 'jpeg'
-            elif file_ext == 'png':
-                image_format = 'png'
-            elif file_ext == 'gif':
-                image_format = 'gif'
-            elif file_ext == 'webp':
-                image_format = 'webp'
-            else:
-                # Default to jpeg
-                image_format = 'jpeg'
-
-            # Create message with image using Strands ContentBlock format (raw bytes)
-            message_content = [
-                ContentBlock(
-                    image=ImageContent(
-                        format=image_format,
-                        source=ImageSource(
-                            bytes=image_data
-                        )
-                    )
-                ),
-                ContentBlock(
-                    text=ocr_prompt
-                )
-            ]
-
-        activity.logger.info("Invoking Ollama granite3.2-vision for OCR...")
-
-        # Execute OCR with vision model
-        response = agent(message_content)
-
-        # Extract response text
-        if hasattr(response, 'message') and response.message:
-            response_text = str(response.message.get("content", [{}])[0].get("text", ""))
-        else:
-            response_text = str(response)
+        # Extract text from Nova Pro response format
+        # Nova Pro returns: {"output": {"message": {"role": "assistant", "content": [{"text": "..."}]}}}
+        response_text = response_body.get('output', {}).get('message', {}).get('content', [{}])[0].get('text', '')
 
         activity.logger.info(f"OCR completed, response length: {len(response_text)} chars")
 
@@ -293,8 +209,7 @@ IMPORTANT: Combine information from ALL pages into a single JSON structure. For 
             "status": "success",
             "extracted_data": extracted_data,
             "json_path": str(json_path),
-            "local_path": str(file_path),
-            "pages_processed": len(page_images) if file_ext == 'pdf' else 1
+            "local_path": str(file_path)
         }
 
     except FileNotFoundError as e:
@@ -394,7 +309,7 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
     - Temporal Activity: Provides durable execution
     - AgentCore Code Interpreter: Executes Python code for financial calculations
     - Strands Agent: Orchestrates analysis with LLM reasoning
-    - Ollama granite3.2-vision: Extracted bank statement data (from document processing)
+    - AWS Bedrock Nova Pro: Extracted bank statement data (from document processing)
 
     This replaces simple heuristics with:
     - DTI (Debt-to-Income) ratio analysis
@@ -410,7 +325,7 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         activity.logger.info("Starting income assessment with AgentCore Code Interpreter")
 
-        # Extract bank statement data from Ollama OCR results
+        # Extract bank statement data from Bedrock Nova Pro OCR results
         bank_statement_data = None
         if docs and isinstance(docs, dict):
             processed_docs = docs.get("documents", [])
@@ -456,7 +371,7 @@ Analyze this loan applicant's income profile and calculate a comprehensive risk 
 - Account Balance: ${f"{bank.get('accounts', [{}])[0].get('balance', 0):,.2f}" if bank.get('accounts') else "0.00"}
 - Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
 
-**Bank Statement Extracted Data (Ollama granite3.2-vision OCR):**
+**Bank Statement Extracted Data (AWS Bedrock Nova Pro OCR):**
 {json.dumps(bank_statement_data, indent=2) if bank_statement_data else "No bank statement data available"}
 
 **Analysis Required:**
@@ -563,7 +478,7 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
     - Temporal Activity: Provides durable execution
     - AgentCore Code Interpreter: Executes Python code for spending pattern analysis
     - Strands Agent: Orchestrates behavioral analysis with LLM reasoning
-    - Ollama granite3.2-vision: Extracted bank statement data (from document processing)
+    - AWS Bedrock Nova Pro: Extracted bank statement data (from document processing)
 
     This analyzes spending behavior and financial discipline:
     - Spending velocity and patterns
@@ -579,7 +494,7 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         activity.logger.info("Starting expense assessment with AgentCore Code Interpreter")
 
-        # Extract bank statement data from Ollama OCR results
+        # Extract bank statement data from Bedrock Nova Pro OCR results
         bank_statement_data = None
         if docs and isinstance(docs, dict):
             processed_docs = docs.get("documents", [])
@@ -625,7 +540,7 @@ Analyze this loan applicant's expense profile and spending behavior patterns:
 - Current Balance: ${f"{bank.get('accounts', [{}])[0].get('balance', 0):,.2f}" if bank.get('accounts') else "0.00"}
 - Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
 
-**Bank Statement Data (Extracted by Ollama granite3.2-vision OCR):**
+**Bank Statement Data (Extracted by AWS Bedrock Nova Pro OCR):**
 {json.dumps(bank_statement_data, indent=2) if bank_statement_data else "No bank statement data available"}
 
 **Analysis Required:**
