@@ -9,9 +9,11 @@ from strands import Agent
 from strands_tools.code_interpreter import AgentCoreCodeInterpreter
 from classes.agents import DataFetchAgent, CreditReportAgent
 from document_prompts import get_prompt_for_document
-import base64
-import io
-import boto3
+# Import BedrockModel for AWS Bedrock integration via Strands for Nova
+from strands.models import BedrockModel
+from utilities.aws_client import get_aws_session
+from botocore.config import Config
+import re
 
 
 # ============================================================================
@@ -66,16 +68,16 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
 @activity.defn
 async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Process a single image document using AWS Bedrock Nova Pro vision model for OCR.
+    Process a single image document using AWS Bedrock Nova Pro vision model via Strands for OCR.
 
     ARCHITECTURE NOTE:
     - Temporal Activity: Provides durable execution
+    - Strands BedrockModel: Simplified AWS Bedrock integration
     - AWS Bedrock Nova Pro: Vision model for document OCR
-    - Bedrock Runtime API: Direct invocation for structured data extraction
 
     This activity:
     - Reads a single image from local file
-    - Sends image to AWS Bedrock Nova Pro via Bedrock Runtime API
+    - Sends image to AWS Bedrock Nova Pro via Strands BedrockModel
     - Extracts structured JSON data
     - Saves extracted JSON to local file
     """
@@ -84,7 +86,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
         doc_type = payload.get("doc_type")
         local_path = payload.get("local_path")
 
-        activity.logger.info(f"Processing {doc_type} with AWS Bedrock Nova Pro: {local_path}")
+        activity.logger.info(f"Processing {doc_type} with AWS Bedrock Nova Pro (Strands): {local_path}")
 
         file_path = Path(local_path)
 
@@ -102,7 +104,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
         # Determine file type
         file_ext = file_path.suffix.lstrip('.').lower()
 
-        # Only accept image files
+        # Only accept image files - Strands supports: png, jpeg, gif, webp
         supported_formats = ['jpg', 'jpeg', 'png', 'gif', 'webp']
         if file_ext not in supported_formats:
             raise ValueError(f"Unsupported file format: {file_ext}. Only image files are supported: {', '.join(supported_formats)}")
@@ -115,70 +117,67 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
 
         activity.logger.info(f"Image read, size: {len(image_data)} bytes")
 
-        # Base64 encode the image data for JSON serialization
-        import base64
-        image_data_b64 = base64.b64encode(image_data).decode('utf-8')
+        # Initialize Strands BedrockModel for Nova Pro
 
-        # Initialize AWS Bedrock Runtime client
-        import boto3
-        from utilities.aws_client import get_aws_session
-
-        session = get_aws_session()
-        bedrock_runtime = session.client(
-            service_name='bedrock-runtime',
-            region_name=os.getenv("AWS_REGION", "us-west-2")
-        )
-
-        # Use the Nova Pro inference profile ARN from your working CLI command
         model_id = os.getenv(
             "AWS_BEDROCK_NOVA_MODEL_ID",
             "arn:aws:bedrock:us-west-2:1111111111:inference-profile/us.amazon.nova-pro-v1:0"
         )
 
-        activity.logger.info(f"Invoking AWS Bedrock Nova Pro for OCR with model: {model_id}")
+        activity.logger.info(f"Invoking AWS Bedrock Nova Pro via Strands with model: {model_id}")
 
-        # Prepare the request body matching your working CLI command
-        request_body = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "text": ocr_prompt
-                        },
-                        {
-                            "image": {
-                                "format": file_ext if file_ext in ['png', 'jpeg', 'gif', 'webp'] else 'jpeg',
-                                "source": {
-                                    "bytes": image_data_b64
-                                }
-                            }
-                        }
-                    ]
-                }
-            ],
-            "inferenceConfig": {
-                "maxTokens": 2560,
-                "stopSequences": [],
-                "temperature": 1,
-                "topP": 1
-            }
-        }
+        # Create BedrockModel with AWS session with increased timeout
+        # Note: region_name is inherited from the boto_session, so we don't specify it separately
+        
 
-        # Invoke Bedrock model
-        response = bedrock_runtime.invoke_model(
-            modelId=model_id,
-            body=json.dumps(request_body),
-            contentType="application/json",
-            accept="application/json"
+        # Configure boto client with increased timeout for large image processing
+        boto_config = Config(
+            read_timeout=300,  # 5 minutes for large images
+            connect_timeout=60,
+            retries={'max_attempts': 3, 'mode': 'standard'}
         )
 
-        # Parse response
-        response_body = json.loads(response['body'].read())
+        session = get_aws_session()
+        bedrock_model = BedrockModel(
+            boto_session=session,
+            boto_client_config=boto_config,
+            model_id=model_id,
+            max_tokens=2560,
+            temperature=1,
+            top_p=1
+        )
 
-        # Extract text from Nova Pro response format
-        # Nova Pro returns: {"output": {"message": {"role": "assistant", "content": [{"text": "..."}]}}}
-        response_text = response_body.get('output', {}).get('message', {}).get('content', [{}])[0].get('text', '')
+        # Create Strands Agent with BedrockModel
+        agent = Agent(model=bedrock_model)
+
+        # Normalize file extension for Strands ImageContent format
+        image_format = file_ext if file_ext in ['png', 'jpeg', 'gif', 'webp'] else 'jpeg'
+        if file_ext == 'jpg':
+            image_format = 'jpeg'
+
+        # Prepare content with ImageContent using Strands format
+        # Pass content directly to agent as array of content blocks
+        content = [
+            {
+                "image": {
+                    "format": image_format,
+                    "source": {
+                        "bytes": image_data  # Strands handles encoding internally
+                    }
+                }
+            },
+            {"text": ocr_prompt}
+        ]
+
+        # Invoke agent with image and text content
+        response = agent(content)
+
+        # Extract response text from Strands AgentResult
+        # AgentResult.message["content"] contains list of ContentBlock objects
+        response_text = ""
+        for block in response.message["content"]:
+            if "text" in block:
+                response_text += block["text"]
 
         activity.logger.info(f"OCR completed, response length: {len(response_text)} chars")
 
@@ -189,7 +188,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
             extracted_data = json.loads(response_text)
         except json.JSONDecodeError:
             # Try to find JSON in the response
-            import re
+            
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 extracted_data = json.loads(json_match.group(0))
@@ -422,7 +421,6 @@ Return a structured analysis with:
         # Try to extract key metrics from response (simple parsing)
         if "DTI" in response_text or "dti" in response_text.lower():
             # Extract DTI ratio if present
-            import re
             dti_match = re.search(r'DTI[:\s]+([0-9.]+)%?', response_text, re.IGNORECASE)
             if dti_match:
                 dti_ratio = float(dti_match.group(1))
@@ -669,8 +667,6 @@ Write Python code to perform comprehensive spending behavior analysis:
         }
 
         # Extract key metrics from response using regex
-        import re
-
         # Extract expense-to-income ratio
         expense_ratio_match = re.search(r'expense[- ]to[- ]income[:\s]+([0-9.]+)%?', response_text, re.IGNORECASE)
         if expense_ratio_match:
