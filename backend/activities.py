@@ -798,6 +798,6 @@ async def aggregate_and_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
         "explanation": explanation,
         "llm_error": llm_error,
         # include raw output for debugging / inspection
-        "raw_output": explanation,
+        # "raw_output": explanation,
     }
     return decision
