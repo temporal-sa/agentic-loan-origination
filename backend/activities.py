@@ -5,10 +5,16 @@ import os
 import json
 from pathlib import Path
 from utilities import model
+from utilities.prompts import (
+    get_prompt_for_document,
+    INCOME_ASSESSMENT_SYSTEM_PROMPT,
+    EXPENSE_ASSESSMENT_SYSTEM_PROMPT,
+    get_income_analysis_prompt,
+    get_expense_analysis_prompt
+)
 from strands import Agent
 from strands_tools.code_interpreter import AgentCoreCodeInterpreter
 from classes.agents import DataFetchAgent, CreditReportAgent
-from document_prompts import get_prompt_for_document
 # Import BedrockModel for AWS Bedrock integration via Strands for Nova
 from strands.models import BedrockModel
 from utilities.aws_client import get_aws_session
@@ -339,66 +345,25 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
         code_interpreter_tool = AgentCoreCodeInterpreter(region=region_name)
 
         # Create Strands agent with code interpreter tool
-        SYSTEM_PROMPT = """You are a financial analyst specializing in loan underwriting.
-You have access to a Python code interpreter to perform complex financial calculations.
-When analyzing income and loan affordability, write Python code to:
-1. Calculate debt-to-income (DTI) ratios
-2. Analyze income trends over time
-3. Detect irregular spending patterns
-4. Calculate statistical risk scores
-5. Validate data consistency between sources
-
-Always execute calculations using code to ensure accuracy."""
-
         agent = Agent(
             model=model.get_model(),
             tools=[code_interpreter_tool.code_interpreter],
-            system_prompt=SYSTEM_PROMPT
+            system_prompt=INCOME_ASSESSMENT_SYSTEM_PROMPT
         )
 
-        # Prepare comprehensive financial data
-        analysis_prompt = f"""
-Analyze this loan applicant's income profile and calculate a comprehensive risk assessment:
+        # Prepare comprehensive financial data using prompt template
+        bank_balance = bank.get('accounts', [{}])[0].get('balance', 0) if bank.get('accounts') else 0
+        account_type = bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'
 
-**Loan Application:**
-- Applicant ID: {app.get('applicant_id')}
-- Requested Loan Amount: ${app.get('amount', 0):,.2f}
-- Declared Monthly Income: ${app.get('income', 0):,.2f}
-- Monthly Expenses: ${app.get('expenses', 0):,.2f}
-
-**Bank Account Data:**
-- Account Balance: ${f"{bank.get('accounts', [{}])[0].get('balance', 0):,.2f}" if bank.get('accounts') else "0.00"}
-- Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
-
-**Bank Statement Extracted Data (AWS Bedrock Nova Pro OCR):**
-{json.dumps(bank_statement_data, indent=2) if bank_statement_data else "No bank statement data available"}
-
-**Analysis Required:**
-Write Python code to:
-1. Calculate monthly DTI ratio: (monthly_loan_payment / monthly_income) * 100
-   - Assume 5% APR, loan term of 5 years for monthly payment calculation
-   - DTI < 30% is excellent, 30-40% acceptable, >40% risky
-
-2. Calculate disposable income after loan: income - expenses - monthly_loan_payment
-
-3. Validate declared income against bank statement data (if available)
-   - Check for consistency
-   - Flag any discrepancies > 20%
-
-4. Calculate income stability risk score (0-100, where 0 is lowest risk):
-   - If bank statement shows consistent deposits: lower risk
-   - If income varies significantly: higher risk
-
-5. Determine loan affordability: Can applicant afford monthly payments?
-
-Return a structured analysis with:
-- DTI ratio (percentage)
-- Disposable income after loan
-- Income validation result (consistent/discrepancy/no_data)
-- Risk score (0-100)
-- Affordability assessment (affordable/marginal/risky)
-- Detailed reasoning
-"""
+        analysis_prompt = get_income_analysis_prompt(
+            applicant_id=app.get('applicant_id'),
+            loan_amount=app.get('amount', 0),
+            monthly_income=app.get('income', 0),
+            monthly_expenses=app.get('expenses', 0),
+            bank_balance=bank_balance,
+            account_type=account_type,
+            bank_statement_data=bank_statement_data
+        )
 
         # Execute analysis with AgentCore Code Interpreter
         activity.logger.info("Invoking AgentCore Code Interpreter for income analysis...")
@@ -408,8 +373,7 @@ Return a structured analysis with:
         response_text = str(response.message["content"][0]["text"]) if response.message else "No response"
         activity.logger.info(f"AgentCore analysis completed: {response_text[:500]}...")
 
-        # Parse the response to extract structured data
-        # The agent should provide structured output, but we'll extract key metrics
+        # Return the analysis result
         result = {
             "status": "success",
             "analysis_method": "agentcore_code_interpreter",
@@ -417,35 +381,6 @@ Return a structured analysis with:
             "income": app.get("income"),
             "loan_amount": app.get("amount"),
         }
-
-        # Try to extract key metrics from response (simple parsing)
-        if "DTI" in response_text or "dti" in response_text.lower():
-            # Extract DTI ratio if present
-            dti_match = re.search(r'DTI[:\s]+([0-9.]+)%?', response_text, re.IGNORECASE)
-            if dti_match:
-                dti_ratio = float(dti_match.group(1))
-                result["dti_ratio"] = dti_ratio
-                result["income_ok"] = dti_ratio < 40  # DTI < 40% is acceptable
-
-        # Extract risk score if present
-        risk_match = re.search(r'risk[_ ]score[:\s]+([0-9.]+)', response_text, re.IGNORECASE)
-        if risk_match:
-            result["risk_score"] = float(risk_match.group(1))
-
-        # Extract affordability
-        if "affordable" in response_text.lower():
-            result["affordability"] = "affordable"
-        elif "risky" in response_text.lower():
-            result["affordability"] = "risky"
-        else:
-            result["affordability"] = "marginal"
-
-        # Fallback: if no structured data extracted, use basic heuristic
-        if "income_ok" not in result:
-            balance = bank.get("accounts", [{}])[0].get("balance", 0) if bank.get("accounts") else 0
-            ratio = app.get("income", 5000) / max(app.get("amount", 1000), 1)
-            result["income_ok"] = ratio > 2 or balance > 5000
-            result["fallback_method"] = "heuristic"
 
         activity.logger.info(f"Income assessment result: {result}")
         return result
@@ -507,148 +442,25 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
         code_interpreter_tool = AgentCoreCodeInterpreter(region=region_name)
 
         # Create Strands agent with code interpreter tool
-        SYSTEM_PROMPT = """You are a financial behavior analyst specializing in spending pattern analysis for loan underwriting.
-You have access to a Python code interpreter to perform detailed behavioral and expense analysis.
-When analyzing expenses and spending patterns, write Python code to:
-1. Categorize expenses by type (essential, variable, discretionary)
-2. Calculate spending velocity and financial stress indicators
-3. Analyze purchasing behavior patterns
-4. Detect financial discipline and risk factors
-5. Validate declared expenses against actual spending
-
-Always execute calculations using code to ensure accuracy and provide behavioral insights."""
-
         agent = Agent(
             model=model.get_model(),
             tools=[code_interpreter_tool.code_interpreter],
-            system_prompt=SYSTEM_PROMPT
+            system_prompt=EXPENSE_ASSESSMENT_SYSTEM_PROMPT
         )
 
-        # Prepare comprehensive analysis prompt
-        analysis_prompt = f"""
-Analyze this loan applicant's expense profile and spending behavior patterns:
+        # Prepare comprehensive analysis prompt using prompt template
+        bank_balance = bank.get('accounts', [{}])[0].get('balance', 0) if bank.get('accounts') else 0
+        account_type = bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'
 
-**Loan Application:**
-- Applicant ID: {app.get('applicant_id')}
-- Declared Monthly Expenses: ${app.get('expenses', 0):,.2f}
-- Declared Monthly Income: ${app.get('income', 0):,.2f}
-- Requested Loan Amount: ${app.get('amount', 0):,.2f}
-
-**Bank Account Data:**
-- Current Balance: ${f"{bank.get('accounts', [{}])[0].get('balance', 0):,.2f}" if bank.get('accounts') else "0.00"}
-- Account Type: {bank.get('accounts', [{}])[0].get('type', 'N/A') if bank.get('accounts') else 'N/A'}
-
-**Bank Statement Data (Extracted by AWS Bedrock Nova Pro OCR):**
-{json.dumps(bank_statement_data, indent=2) if bank_statement_data else "No bank statement data available"}
-
-**Analysis Required:**
-Write Python code to perform comprehensive spending behavior analysis:
-
-**1. EXPENSE CATEGORIZATION (from bank statement transactions):**
-   Categories to analyze:
-   - Essential expenses:
-     * Housing (rent/mortgage, property tax)
-     * Utilities (electricity, water, gas, internet)
-     * Insurance (health, auto, life)
-     * Loan payments (existing loans, credit cards)
-   - Variable expenses:
-     * Groceries and household items
-     * Transportation (gas, public transit, car maintenance)
-     * Healthcare (medical, pharmacy, dental)
-     * Childcare/education
-   - Discretionary spending:
-     * Dining out and restaurants
-     * Entertainment (movies, concerts, streaming services)
-     * Shopping (clothing, electronics, non-essentials)
-     * Travel and vacation
-     * Subscriptions and memberships
-
-   Calculate totals for each category and subcategory.
-
-**2. SPENDING VELOCITY ANALYSIS:**
-   - Identify deposit dates (likely income/paycheck)
-   - Calculate days between deposit and when balance drops below 20% of deposit
-   - Fast velocity (< 5 days) = high financial stress
-   - Moderate velocity (5-15 days) = normal spending
-   - Slow velocity (> 15 days) = good financial discipline
-
-   Calculate average spending velocity over past 3 months.
-
-**3. PURCHASE PATTERN ANALYSIS:**
-   - Count small frequent transactions (< $20) vs. large purchases (> $200)
-   - Analyze transaction timing:
-     * Weekend spending (Friday-Sunday) - indicator of discretionary spending
-     * Evening spending (after 6 PM) - impulse purchases
-     * Payday spending (within 3 days of deposit) - spending discipline
-   - Identify merchant categories (retail, restaurants, entertainment, etc.)
-   - Calculate discretionary spending ratio: (discretionary / total_expenses) * 100
-
-**4. FINANCIAL STRESS INDICATORS:**
-   Detect red flags:
-   - Minimum balance throughout month (if < $100 frequently = high stress)
-   - Overdraft fees or NSF (insufficient funds) charges
-   - Payday loans or cash advance transactions
-   - Gambling transactions (casinos, lottery, betting)
-   - Late payment fees on bills
-   - Multiple balance transfers between accounts
-   - Declining balance trend over 3+ months
-
-   Count red flags and assess severity.
-
-**5. SAVINGS DISCIPLINE:**
-   - Check for automatic savings transfers (positive indicator)
-   - Calculate savings buffer: month-end balance / monthly expenses
-   - Buffer > 1.0 = emergency fund present (excellent)
-   - Buffer 0.5-1.0 = some buffer (moderate)
-   - Buffer < 0.5 = living paycheck to paycheck (risky)
-
-   Analyze balance trend: increasing (good), stable (moderate), decreasing (concerning)
-
-**6. EXPENSE VALIDATION:**
-   - Compare declared expenses (${app.get('expenses', 0):,.2f}) vs. actual bank statement debits
-   - Calculate discrepancy percentage: abs(declared - actual) / actual * 100
-   - Flag if discrepancy > 20%
-   - Identify reason for discrepancy (underestimated, cash spending, multiple accounts)
-
-**7. BEHAVIORAL RISK SCORE (0-100, where 0 is lowest risk):**
-   Risk factors (add points):
-   - High discretionary spending (>30% of income): +20 points
-   - Fast spending velocity (< 5 days): +15 points
-   - Overdraft/NSF fees present: +20 points
-   - Payday loans/cash advances: +25 points
-   - Gambling transactions: +15 points
-   - No savings buffer (< 0.5): +15 points
-   - Declining balance trend: +10 points
-   - Late payment fees: +10 points
-   - Declared vs actual expense discrepancy > 20%: +10 points
-
-   Positive factors (subtract points):
-   - Automatic savings transfers: -10 points
-   - Savings buffer > 1.0: -15 points
-   - Low discretionary spending (< 20%): -10 points
-   - Increasing balance trend: -10 points
-
-   Final score: Sum all points (min 0, max 100)
-
-**8. FINANCIAL DISCIPLINE ASSESSMENT:**
-   Based on overall analysis:
-   - Disciplined (score 0-30): Good spending habits, savings, low discretionary spending
-   - Moderate (score 31-60): Balanced spending, some concerns, room for improvement
-   - Undisciplined (score 61-100): Poor spending habits, high risk, financial stress
-
-**Return structured analysis with:**
-- Total actual monthly expenses (by category)
-- Expense-to-income ratio (%)
-- Discretionary spending ratio (%)
-- Spending velocity (days)
-- Savings buffer ratio
-- Expense validation result (matches/discrepancy/red_flags)
-- List of red flags detected (if any)
-- Behavioral risk score (0-100)
-- Financial discipline assessment (disciplined/moderate/undisciplined)
-- Affordability of new loan payment
-- Detailed reasoning and recommendations
-"""
+        analysis_prompt = get_expense_analysis_prompt(
+            applicant_id=app.get('applicant_id'),
+            declared_expenses=app.get('expenses', 0),
+            monthly_income=app.get('income', 0),
+            loan_amount=app.get('amount', 0),
+            bank_balance=bank_balance,
+            account_type=account_type,
+            bank_statement_data=bank_statement_data
+        )
 
         # Execute analysis with AgentCore Code Interpreter
         activity.logger.info("Invoking AgentCore Code Interpreter for expense behavior analysis...")
@@ -658,83 +470,13 @@ Write Python code to perform comprehensive spending behavior analysis:
         response_text = str(response.message["content"][0]["text"]) if response.message else "No response"
         activity.logger.info(f"AgentCore expense analysis completed: {response_text[:500]}...")
 
-        # Parse response to extract structured data
+        # Return the analysis result
         result = {
             "status": "success",
             "analysis_method": "agentcore_code_interpreter",
             "raw_analysis": response_text,
             "declared_expenses": app.get("expenses"),
         }
-
-        # Extract key metrics from response using regex
-        # Extract expense-to-income ratio
-        expense_ratio_match = re.search(r'expense[- ]to[- ]income[:\s]+([0-9.]+)%?', response_text, re.IGNORECASE)
-        if expense_ratio_match:
-            result["expense_to_income_ratio"] = float(expense_ratio_match.group(1))
-            result["affordability_ok"] = float(expense_ratio_match.group(1)) < 50  # < 50% is good
-
-        # Extract discretionary ratio
-        disc_match = re.search(r'discretionary[:\s]+([0-9.]+)%?', response_text, re.IGNORECASE)
-        if disc_match:
-            result["discretionary_ratio"] = float(disc_match.group(1))
-
-        # Extract spending velocity
-        velocity_match = re.search(r'velocity[:\s]+([0-9.]+)\s*day', response_text, re.IGNORECASE)
-        if velocity_match:
-            result["spending_velocity_days"] = float(velocity_match.group(1))
-
-        # Extract savings buffer
-        buffer_match = re.search(r'buffer[:\s]+([0-9.]+)', response_text, re.IGNORECASE)
-        if buffer_match:
-            result["savings_buffer"] = float(buffer_match.group(1))
-
-        # Extract behavioral risk score
-        behavior_risk_match = re.search(r'(?:behavioral\s+)?risk[_ ]score[:\s]+([0-9.]+)', response_text, re.IGNORECASE)
-        if behavior_risk_match:
-            result["behavioral_risk_score"] = float(behavior_risk_match.group(1))
-
-        # Extract financial discipline
-        if "undisciplined" in response_text.lower():
-            result["financial_discipline"] = "undisciplined"
-        elif "disciplined" in response_text.lower() and "undisciplined" not in response_text.lower():
-            result["financial_discipline"] = "disciplined"
-        else:
-            result["financial_discipline"] = "moderate"
-
-        # Check for red flags
-        red_flags = []
-        red_flag_keywords = {
-            "overdraft": "overdraft_fees",
-            "nsf": "insufficient_funds",
-            "payday loan": "payday_loans",
-            "cash advance": "cash_advances",
-            "gambling": "gambling_transactions",
-            "late payment": "late_payment_fees",
-            "late fee": "late_payment_fees"
-        }
-
-        for keyword, flag_name in red_flag_keywords.items():
-            if keyword in response_text.lower():
-                red_flags.append(flag_name)
-
-        if red_flags:
-            result["red_flags"] = list(set(red_flags))  # Remove duplicates
-            result["has_red_flags"] = True
-        else:
-            result["has_red_flags"] = False
-
-        # Extract total expenses from analysis
-        actual_expense_match = re.search(r'total[_ ](?:actual[_ ])?(?:monthly[_ ])?expenses[:\s]+\$?([0-9,.]+)', response_text, re.IGNORECASE)
-        if actual_expense_match:
-            result["actual_expenses"] = float(actual_expense_match.group(1).replace(',', ''))
-
-        # Fallback: if no structured data extracted, use basic heuristic
-        if "affordability_ok" not in result:
-            expenses = app.get("expenses", 1000)
-            disposable = app.get("income", 5000) - expenses
-            result["affordability_ok"] = disposable > app.get("amount", 1000) / 12
-            result["expenses"] = expenses
-            result["fallback_method"] = "heuristic"
 
         activity.logger.info(f"Expense assessment result: {result}")
         return result

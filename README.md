@@ -12,15 +12,15 @@ This repository demonstrates an agentic loan underwriting system built with Temp
   - `DataFetchAgent`: Generic HTTP data fetching with validation
   - `CreditReportAgent`: Specialized credit report validation with multi-provider support
 - **Specialist Activities**: Mock data fetching (bank, documents, credit) and AI-powered assessments (income, expense, credit analysis)
-  - `trigger_document_processing`: Processes documents using Ollama granite3.2-vision for OCR
+  - `trigger_document_processing`: Processes documents using AWS Bedrock Nova Pro vision model for OCR
   - Synchronous document processing with structured JSON extraction
-- **Ollama granite3.2-vision**: Local vision model for document OCR (bank statements, IDs, payslips)
+- **AWS Bedrock Nova Pro**: Cloud-based vision model for document OCR (bank statements, IDs, payslips)
   - **Parallel fan-out processing**: All documents processed simultaneously
   - Uses `asyncio.gather()` for concurrent execution (Temporal-safe)
   - Document-specific prompts for accurate extraction
   - Independent retry policies and fault isolation per document
   - Structured JSON output saved locally
-  - No cloud dependencies for document processing
+  - Strands BedrockModel integration for simplified AWS Bedrock API calls
 - **AWS Bedrock AgentCore**: Code Interpreter for sophisticated financial analysis (DTI, risk scoring, trend analysis)
   - See [AGENTCORE_INTEGRATION.md](AGENTCORE_INTEGRATION.md) for implementation details
 - **Strands Integration**: Agent orchestration with structured output validation using Ollama or AWS Bedrock models
@@ -29,7 +29,7 @@ This repository demonstrates an agentic loan underwriting system built with Temp
 - **Environment Configuration**: Configurable LLM settings (Ollama/AWS Bedrock) and Temporal settings (Local/Cloud) via `.env` file
 
 ## Sequence diagram
-The diagram below shows the end-to-end flow: user submits via Streamlit, Streamlit calls FastAPI which starts a Temporal workflow. A worker executes activities (mock APIs and specialist agents). Documents are processed in parallel using Temporal's fan-out pattern with `asyncio.gather()`. The workflow calls Ollama/Bedrock for a summary/decision, then awaits a human-review signal. The underwriter approves/rejects via the UI which signals the running workflow.
+The diagram below shows the end-to-end flow: user submits via Streamlit, Streamlit calls FastAPI which starts a Temporal workflow. A worker executes activities (mock APIs and specialist agents). Documents are processed in parallel using Temporal's fan-out pattern with `asyncio.gather()` and AWS Bedrock Nova Pro for OCR. The workflow calls Ollama/Bedrock for a summary/decision, then awaits a human-review signal. The underwriter approves/rejects via the UI which signals the running workflow.
 
 ```mermaid
 sequenceDiagram
@@ -42,7 +42,7 @@ sequenceDiagram
 	participant DataAgent as DataFetchAgent
 	participant CreditAgent as CreditReportAgent
 	participant Mockoon as Mock APIs
-	participant Ollama as Ollama granite3.2-vision
+	participant NovaPro as AWS Bedrock Nova Pro
 	participant LLM as LLM Provider (Ollama/Bedrock)
 
 	User->>Streamlit: Submit loan application
@@ -61,26 +61,26 @@ sequenceDiagram
 
 	par Document 1 (Bank Statement)
 		Supervisor->>Worker: _process_single_document(bank_stmt)
-		Worker->>Ollama: trigger_document_processing (base64 + prompt)
-		Ollama-->>Worker: Extracted JSON data
+		Worker->>NovaPro: trigger_document_processing (image + prompt via Strands)
+		NovaPro-->>Worker: Extracted JSON data
 		Worker-->>Supervisor: Success + structured data
 
 	and Document 2 (ID Card)
 		Supervisor->>Worker: _process_single_document(id_card)
-		Worker->>Ollama: granite3.2-vision OCR
-		Ollama-->>Worker: License data (name, DOB, address)
+		Worker->>NovaPro: Nova Pro vision OCR (via Strands BedrockModel)
+		NovaPro-->>Worker: License data (name, DOB, address)
 		Worker-->>Supervisor: Success + data
 
 	and Document 3 (Salary Slip)
 		Supervisor->>Worker: _process_single_document(salary_slip)
-		Worker->>Ollama: granite3.2-vision OCR
-		Ollama-->>Worker: Salary, deductions, YTD
+		Worker->>NovaPro: Nova Pro vision OCR (via Strands BedrockModel)
+		NovaPro-->>Worker: Salary, deductions, YTD
 		Worker-->>Supervisor: Success + data
 		Note over Supervisor: Each doc isolated - failures don't affect others
 	end
 
 	Note over Supervisor: asyncio.gather() waits for all docs
-	Note over Supervisor: All OCR processed locally, no cloud calls
+	Note over Supervisor: All OCR processed by AWS Bedrock Nova Pro
 
 	Worker->>CreditAgent: fetch_credit_report_cibil(applicant_id)
 	CreditAgent->>Mockoon: HTTP GET /cibil?applicant_id=X
@@ -158,10 +158,12 @@ sequenceDiagram
 - **LLM Provider** (one of the following):
   - **Ollama**: Local installation with model (default: `llama3:latest`, configurable via `.env`)
   - **AWS Bedrock**: Access to AWS Bedrock service with API key and supported models (e.g., `au.anthropic.claude-sonnet-4-5-20250929-v1:0`)
-- **Ollama granite3.2-vision** (for document OCR):
-  - Ollama installed locally
-  - granite3.2-vision model: `ollama pull granite3.2-vision:latest`
-  - Processes bank statements, salary slips, and ID documents locally
+- **AWS Bedrock Nova Pro** (for document OCR):
+  - AWS account with Bedrock access
+  - Access to Nova Pro vision model (inference profile or direct model access)
+  - Required IAM permissions: `bedrock:InvokeModel`
+  - Processes bank statements, salary slips, and ID documents using cloud-based vision AI
+  - Default model: `arn:aws:bedrock:us-west-2:1111111111:inference-profile/us.amazon.nova-pro-v1:0`
 - **AWS Bedrock AgentCore** (optional, for advanced financial analysis):
   - AWS account with Bedrock access for Code Interpreter
   - Required IAM permissions: `bedrock:InvokeAgent`, `bedrock:InvokeCodeInterpreter`
@@ -207,9 +209,10 @@ AWS_BEARER_TOKEN_BEDROCK=<your-api-key>
 AWS_REGION=<your-region>  # e.g., ap-southeast-2
 AWS_BEDROCK_MODEL=<model-id>  # e.g., au.anthropic.claude-sonnet-4-5-20250929-v1:0
 
-# Ollama granite3.2-vision for Document OCR:
-# Uses same OLLAMA_URL configured above
-# Install model: ollama pull granite3.2-vision:latest
+# AWS Bedrock Nova Pro for Document OCR:
+AWS_BEDROCK_NOVA_MODEL_ID=arn:aws:bedrock:us-west-2:1111111111:inference-profile/us.amazon.nova-pro-v1:0
+# Or use a specific region model ARN
+# AWS_BEDROCK_NOVA_MODEL_ID=us.amazon.nova-pro-v1:0
 ```
 
 3. **Start required services:**
@@ -289,11 +292,11 @@ To use Temporal Cloud instead of a local server:
 
 ## Key Features
 - **Structured Data Validation**: Strands integration provides automatic validation of loan applications
-- **Parallel Document Processing**: Ollama granite3.2-vision extracts structured data from documents with:
+- **Parallel Document Processing**: AWS Bedrock Nova Pro vision model extracts structured data from documents with:
   - **Fan-out parallelism**: All documents processed simultaneously using `asyncio.gather()`
   - **Synchronous processing**: Direct OCR without polling overhead
   - **Fault isolation**: Each document's failure won't affect others
-  - **Local processing**: No cloud dependencies or S3 storage required
+  - **Cloud-based vision AI**: AWS Bedrock Nova Pro for high-accuracy OCR
   - **Independent retry policies** per document
   - **State persistence** ensures completed documents won't reprocess on failure
   - Support for bank statements, IDs, and salary slips
@@ -336,10 +339,10 @@ To use Temporal Cloud instead of a local server:
 - **Fan-Out Parallel Processing Pattern**: Document processing demonstrates Temporal best practices:
   - **Parallel execution**: `asyncio.gather()` processes all documents simultaneously
   - **Helper method**: `_process_single_document()` encapsulates document lifecycle
-  - **Synchronous OCR**: Ollama granite3.2-vision processes documents directly
+  - **Synchronous OCR**: AWS Bedrock Nova Pro processes documents directly via Strands
   - **Fault isolation**: Each document has independent retry policy; failures don't affect others
   - **State persistence**: Completed documents won't reprocess after workflow restart
-  - **Local processing**: No external cloud services needed for OCR
+  - **Cloud vision AI**: AWS Bedrock Nova Pro provides enterprise-grade OCR
 - **Provider Fallback Pattern**: Temporal workflow orchestrates CIBIL → Experian fallback for credit reports
 - **Configurable LLM**: Support for both Ollama (local) and AWS Bedrock (cloud) models via environment variables
 - **Production Considerations**: Would require secure API integrations, authentication, and real data providers

@@ -11,50 +11,68 @@ class SupervisorWorkflow:
     """
     Temporal Supervisor Workflow for Loan Underwriting.
 
-    ARCHITECTURE PATTERN - Temporal + Strands Coexistence:
+    ARCHITECTURE PATTERN - Multi-Layer AI Stack:
     ═══════════════════════════════════════════════════════════════
 
-    This workflow demonstrates the value proposition of combining:
+    This workflow demonstrates a sophisticated AI stack combining:
 
     1. TEMPORAL (Orchestration Layer - Outer Loop):
        - Durable workflow execution (survives crashes, restarts)
        - Automatic retry policies for transient failures
        - Provider fallback strategies (CIBIL → Experian)
        - Human-in-the-loop with signals and queries
-       - Parallel activity execution
+       - Fan-out parallel execution (documents, assessments)
        - Complete audit trail and observability
-       - Time-based operations (timeouts, delays)
+       - Time-based operations (timeouts, delays, waits)
+       - State management (document upload, human review)
 
     2. STRANDS AGENTS (Intelligence Layer - Inner Loop):
        - HTTP requests with intelligent error handling
        - Data validation and quality assessment
        - Multi-agent collaboration within activities
        - Structured reasoning and decision-making
-       - Tool usage (http_request etc.)
+       - Tool usage (http_request, etc.)
        - Context-aware logging and diagnostics
+
+    3. AWS BEDROCK NOVA PRO (Vision Processing):
+       - Multimodal OCR for document extraction
+       - Synchronous processing with immediate results
+       - Structured data extraction from bank statements, IDs, etc.
+       - Parallel document processing orchestrated by Temporal
+
+    4. AGENTCORE CODE INTERPRETER (Financial Analysis):
+       - Advanced financial calculations and analysis
+       - Income/expense pattern recognition
+       - Code-based computation for complex assessments
+       - Python code execution for numerical analysis
 
     ═══════════════════════════════════════════════════════════════
 
     WORKFLOW PHASES:
     ----------------
+    Phase 0: Document Upload Wait (Temporal state management)
+             - Wait for documents via signal
+             - Store document paths in workflow state
+
     Phase 1: Data Acquisition (Temporal orchestrates, Strands fetches)
              - Bank account data (HTTP agent)
-             - Document metadata (HTTP agent)
+             - Document processing (AWS Bedrock Nova Pro OCR - parallel)
              - Credit reports with fallback (HTTP agent + validation)
 
-    Phase 2: Parallel Analysis (Temporal coordinates, Strands analyzes)
-             - Income assessment
-             - Expense assessment
-             - Credit assessment
+    Phase 2: Parallel Analysis (Temporal coordinates, AgentCore analyzes)
+             - Income assessment (AgentCore Code Interpreter)
+             - Expense assessment (AgentCore Code Interpreter)
+             - Credit assessment (Strands agent)
 
-    Phase 3: Decision Making (Strands agent with LLM)
-             - Aggregate all data
-             - Generate recommendation
+    Phase 3: Decision Aggregation (Strands agent with LLM)
+             - Aggregate all assessment results
+             - Generate loan recommendation
 
-    Phase 4: Human Review (Temporal manages state)
-             - Pause workflow
+    Phase 4: Human Review (Temporal manages durable wait)
+             - Expose summary via query
+             - Pause workflow indefinitely
              - Wait for human signal
-             - Resume with decision
+             - Resume with final decision
     """
 
     def __init__(self) -> None:

@@ -18,5 +18,7 @@ def get_aws_session():
     else:
         return boto3.Session()
 
-# Note: S3 and BDA clients removed - document processing now uses Ollama granite3.2-vision
-# AWS is only used for AgentCore Code Interpreter (configured automatically via region)
+# Note: Document processing uses AWS Bedrock Nova Pro via Strands BedrockModel
+# AWS session is used for:
+#   - Bedrock Nova Pro vision model (document OCR)
+#   - AgentCore Code Interpreter (financial analysis)
