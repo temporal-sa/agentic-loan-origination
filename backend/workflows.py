@@ -16,7 +16,7 @@ class SupervisorWorkflow:
 
     This workflow demonstrates a sophisticated AI stack combining:
 
-    1. TEMPORAL (Orchestration Layer - Outer Loop):
+    1. TEMPORAL (Orchestration Layer - Outer layer):
        - Durable workflow execution (survives crashes, restarts)
        - Automatic retry policies for transient failures
        - Provider fallback strategies (CIBIL → Experian)
