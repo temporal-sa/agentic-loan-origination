@@ -237,6 +237,8 @@ class SupervisorWorkflow:
             workflow.logger.warning("No document paths provided, skipping OCR processing")
             docs = {"documents": [], "status": "no_documents_uploaded"}
 
+        await workflow.sleep(20)  # Simulate processing delay | CRASH YOUR WORKER HERE    
+
         # Activity 3: Fetch credit report with provider fallback
         # ════════════════════════════════════════════════════════
         # KEY ARCHITECTURE PATTERN - FALLBACK ORCHESTRATION:
@@ -265,33 +267,32 @@ class SupervisorWorkflow:
         # ═══════════════════════════════════════════════════════════
         # PHASE 2: PARALLEL SPECIALIST ASSESSMENTS
         # ═══════════════════════════════════════════════════════════
-        # Temporal coordinates parallel execution
+        # Temporal coordinates parallel execution with asyncio.gather()
         # AgentCore Code Interpreter performs sophisticated financial analysis
-        # TEMPORAL ORCHESTRATION: Launch activities in parallel
+        # TEMPORAL ORCHESTRATION: Launch activities in parallel using asyncio.gather()
         # These are independent assessments that can run concurrently
-        income_task = workflow.execute_activity(
-            "income_assessment",
-            {"application": application, "bank": bank, "credit": credit, "documents": docs},
-            start_to_close_timeout=timedelta(minutes=15),  # AgentCore needs more time
-            retry_policy=self._default_retry_policy
+        
+        # Execute all three assessments in parallel
+        credit_res, income_res, expense_res = await asyncio.gather(
+            workflow.execute_activity(
+                "credit_assessment",
+                {"application": application, "credit": credit},
+                start_to_close_timeout=timedelta(minutes=5),  # Credit is quick
+                retry_policy=self._default_retry_policy
+            ),
+            workflow.execute_activity(
+                "income_assessment",
+                {"application": application, "bank": bank, "credit": credit, "documents": docs},
+                start_to_close_timeout=timedelta(minutes=30),  # Increased from 15 min for AgentCore
+                retry_policy=self._default_retry_policy
+            ),
+            workflow.execute_activity(
+                "expense_assessment",
+                {"application": application, "bank": bank, "documents": docs},
+                start_to_close_timeout=timedelta(minutes=30),  # Increased from 15 min for AgentCore
+                retry_policy=self._default_retry_policy
+            )
         )
-        expense_task = workflow.execute_activity(
-            "expense_assessment",
-            {"application": application, "bank": bank, "documents": docs},
-            start_to_close_timeout=timedelta(minutes=15),  # AgentCore needs more time
-            retry_policy=self._default_retry_policy
-        )
-        credit_task = workflow.execute_activity(
-            "credit_assessment",
-            {"application": application, "credit": credit},
-            start_to_close_timeout=timedelta(seconds=90),
-            retry_policy=self._default_retry_policy
-        )
-
-        # Wait for all parallel tasks to complete
-        income_res = await income_task
-        expense_res = await expense_task
-        credit_res = await credit_task
 
         # ═══════════════════════════════════════════════════════════
         # PHASE 3: DECISION AGGREGATION

@@ -1,3 +1,4 @@
+import asyncio
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from typing import Dict, Any
@@ -20,6 +21,50 @@ from strands.models import BedrockModel
 from utilities.aws_client import get_aws_session
 from botocore.config import Config
 import re
+
+
+async def run_blocking_with_heartbeats(
+    callable_fn,
+    *args,
+    heartbeat_interval: int = 60,
+):
+    """Run a blocking callable in the default executor
+
+    Args:
+        callable_fn: Blocking callable to run (e.g., agent invocation)
+        *args: Positional args passed to callable_fn
+        heartbeat_interval: Seconds between heartbeats
+
+    Returns:
+        The result returned by callable_fn
+
+    Raises:
+        CancelledError: If activity is cancelled by Temporal
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, lambda: callable_fn(*args))
+
+    # Wrap the future in a task that can be shielded
+    task = asyncio.ensure_future(future)
+
+    try:
+        while not task.done():
+            try:
+                # Wait for either the task to complete or timeout for heartbeat
+                return await asyncio.wait_for(asyncio.shield(task), timeout=heartbeat_interval)
+            except asyncio.TimeoutError:
+                activity.logger.debug(f"heartbeat")
+
+        # Task completed while we were checking, return result
+        return await task
+
+    except asyncio.CancelledError:
+        # Activity is being cancelled (Temporal timeout or workflow termination)
+        # Cancel both the task and the underlying future
+        task.cancel()
+        future.cancel()
+        activity.logger.info("Activity cancelled, cancelling executor future")
+        raise
 
 
 # ============================================================================
@@ -365,9 +410,16 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
             bank_statement_data=bank_statement_data
         )
 
-        # Execute analysis with AgentCore Code Interpreter
+        # Execute analysis with AgentCore Code Interpreter (run in executor)
         activity.logger.info("Invoking AgentCore Code Interpreter for income analysis...")
-        response = agent(analysis_prompt)
+
+        # Run the potentially-blocking agent call in the default executor and
+        # send periodic heartbeats while waiting so Temporal doesn't time out
+        response = await run_blocking_with_heartbeats(
+            agent,
+            analysis_prompt,
+            heartbeat_interval=60
+        )
 
         # Extract response
         response_text = str(response.message["content"][0]["text"]) if response.message else "No response"
@@ -462,9 +514,16 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
             bank_statement_data=bank_statement_data
         )
 
-        # Execute analysis with AgentCore Code Interpreter
+        # Execute analysis with AgentCore Code Interpreter (run in executor)
         activity.logger.info("Invoking AgentCore Code Interpreter for expense behavior analysis...")
-        response = agent(analysis_prompt)
+
+        # Run the potentially-blocking agent call in the default executor and
+        # send periodic heartbeats while waiting so Temporal doesn't time out
+        response = await run_blocking_with_heartbeats(
+            agent,
+            analysis_prompt,
+            heartbeat_interval=60
+        )
 
         # Extract response
         response_text = str(response.message["content"][0]["text"]) if response.message else "No response"
