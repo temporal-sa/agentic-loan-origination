@@ -46,14 +46,14 @@ async def submit_application(app_data: dict):
                     LoanApplication,
                     f"Validate this loan application data: {app_data}"
                 )
-                print(f"Received application (via Strands): {validated_data}")
+                # print(f"Received application (via Strands): {validated_data}")
             except Exception as strands_error:
                 print(f"Strands validation failed, falling back to direct validation: {strands_error}")
                 validated_data = LoanApplication(**app_data)
                 print(f"Received application (direct): {validated_data}")
         else:
             validated_data = LoanApplication(**app_data)
-            print(f"Received application (direct): {validated_data}")
+            # print(f"Received application (direct): {validated_data}")
 
         client = await get_temporal_client()
         print("Connected to Temporal")
@@ -113,7 +113,7 @@ async def upload_documents(
                     shutil.copyfileobj(file.file, buffer)
 
                 uploaded_files[doc_type] = str(file_path)
-                print(f"Saved {doc_type} to {file_path}")
+                # print(f"Saved {doc_type} to {file_path}")
 
         # Signal the workflow with document paths so it can use them in activities
         try:

@@ -98,7 +98,7 @@ async def fetch_bank_account(applicant_id: str) -> Dict[str, Any]:
 
         # Agent fetches data from bank API
         url = f"http://localhost:3233/bank?applicant_id={applicant_id}"
-        bank_data = data_agent.fetch_data(url, "bank account")
+        bank_data = await data_agent.fetch_data(url, "bank account")
 
         # Validate essential fields
         if "accounts" not in bank_data:
@@ -160,7 +160,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
         if file_ext not in supported_formats:
             raise ValueError(f"Unsupported file format: {file_ext}. Only image files are supported: {', '.join(supported_formats)}")
 
-        activity.logger.info(f"Processing single image file: {file_ext}")
+        # activity.logger.info(f"Processing single image file: {file_ext}")
 
         # Read image bytes
         with open(file_path, 'rb') as f:
@@ -230,7 +230,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
             if "text" in block:
                 response_text += block["text"]
 
-        activity.logger.info(f"OCR completed, response length: {len(response_text)} chars")
+        # activity.logger.info(f"OCR completed, response length: {len(response_text)} chars")
 
         # Parse JSON from response
         # Try to extract JSON from the response (model might include extra text)
@@ -252,7 +252,7 @@ async def trigger_document_processing(payload: Dict[str, Any]) -> Dict[str, Any]
         with open(json_path, 'w') as f:
             json.dump(extracted_data, f, indent=2)
 
-        activity.logger.info(f"Saved extracted data to {json_path}")
+        # activity.logger.info(f"Saved extracted data to {json_path}")
 
         return {
             "doc_type": doc_type,
@@ -304,7 +304,7 @@ async def fetch_credit_report_cibil(applicant_id: str) -> Dict[str, Any]:
 
         # Fetch and validate from CIBIL
         url = f"http://localhost:3233/cibil?applicant_id={applicant_id}"
-        credit_data = credit_agent.fetch_and_validate_credit_report(
+        credit_data = await credit_agent.fetch_and_validate_credit_report(
             applicant_id, "CIBIL", url
         )
 
@@ -336,7 +336,7 @@ async def fetch_credit_report_experian(applicant_id: str) -> Dict[str, Any]:
 
         # Fetch and validate from Experian
         url = f"http://localhost:3233/experian?applicant_id={applicant_id}"
-        credit_data = credit_agent.fetch_and_validate_credit_report(
+        credit_data = await credit_agent.fetch_and_validate_credit_report(
             applicant_id, "Experian", url
         )
 
@@ -382,7 +382,7 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
             for doc in processed_docs:
                 if doc.get("doc_type") == "bank_statement" and doc.get("status") == "success":
                     bank_statement_data = doc.get("extracted_data", {})
-                    activity.logger.info(f"Found extracted bank statement data: {bank_statement_data}")
+                    # activity.logger.info(f"Found extracted bank statement data: {bank_statement_data}")
                     break
 
         # Initialize AgentCore Code Interpreter
@@ -423,7 +423,7 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # Extract response
         response_text = str(response.message["content"][0]["text"]) if response.message else "No response"
-        activity.logger.info(f"AgentCore analysis completed: {response_text[:500]}...")
+        #activity.logger.info(f"AgentCore analysis completed: {response_text[:500]}...")
 
         # Return the analysis result
         result = {
@@ -434,7 +434,7 @@ async def income_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
             "loan_amount": app.get("amount"),
         }
 
-        activity.logger.info(f"Income assessment result: {result}")
+        #activity.logger.info(f"Income assessment result: {result}")
         return result
 
     except Exception as e:
@@ -527,7 +527,7 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # Extract response
         response_text = str(response.message["content"][0]["text"]) if response.message else "No response"
-        activity.logger.info(f"AgentCore expense analysis completed: {response_text[:500]}...")
+        # activity.logger.info(f"AgentCore expense analysis completed: {response_text[:500]}...")
 
         # Return the analysis result
         result = {
@@ -537,7 +537,7 @@ async def expense_assessment(payload: Dict[str, Any]) -> Dict[str, Any]:
             "declared_expenses": app.get("expenses"),
         }
 
-        activity.logger.info(f"Expense assessment result: {result}")
+        # activity.logger.info(f"Expense assessment result: {result}")
         return result
 
     except Exception as e:
@@ -582,8 +582,8 @@ async def aggregate_and_decide(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         raise ApplicationError(
-            f"Ollama LLM call failed: {str(e)}",
-            type="OllamaLLMError",
+            f"LLM call failed: {str(e)}",
+            type="LLMError",
             non_retryable=False
         )
 

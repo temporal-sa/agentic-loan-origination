@@ -32,7 +32,7 @@ When making requests:
             tools=[http_request]
         )
 
-    def fetch_data(self, url: str, data_type: str) -> Dict[str, Any]:
+    async def fetch_data(self, url: str, data_type: str) -> Dict[str, Any]:
         """
         Fetch data from an API endpoint using the Strands agent.
 
@@ -44,48 +44,36 @@ When making requests:
             Parsed JSON response data
         """
         try:
-            # Agent makes the HTTP request using its tool
-            response = self.agent.tool.http_request(
-                method="GET",
-                url=url
-            )
+            # Agent makes the HTTP request using its tool asynchronously
+            # The agent will reason and decide to use the http_request tool
+            prompt = f"Make a GET request to {url}. Extract and return only the JSON response body, nothing else."
+            result = await self.agent.invoke_async(prompt)
 
-            # Extract status code and body from response
-            status_code = None
-            body_text = None
+            # Access the final message from AgentResult
+            if not result.message:
+                raise ValueError(f"No response from agent for {data_type} API")
 
-            for item in response.get("content", []):
+            # Extract text content from the message
+            message_content = result.message.get("content", [])
+            response_text = None
+
+            for item in message_content:
                 if isinstance(item, dict) and "text" in item:
-                    text = item["text"]
-                    # Extract status code
-                    if text.startswith("Status:"):
-                        status_code = text[len("Status:"):].strip()
-                    # Extract body
-                    elif text.startswith("Body:"):
-                        body_text = text[len("Body:"):].strip()
+                    response_text = item["text"]
+                    break
 
-            # Check for HTTP error status codes
-            if status_code and not status_code.startswith("2"):
-                error_msg = f"HTTP {status_code} error from {data_type} API"
-                if body_text:
-                    error_msg += f": {body_text}"
-                raise ValueError(error_msg)
+            if not response_text:
+                raise ValueError(f"No text content in agent response for {data_type} API")
 
-            if not body_text:
-                raise ValueError(f"No body found in {data_type} API response")
-
-            # Parse JSON
-            parsed_data = json.loads(body_text)
-
+            # Parse the JSON response
+            parsed_data = json.loads(response_text)
             activity.logger.info(f"Successfully fetched {data_type} data: {parsed_data}")
             return parsed_data
 
         except json.JSONDecodeError as e:
             error_msg = f"Invalid JSON in {data_type} API response: {str(e)}"
-            if body_text:
-                error_msg += f". Response body: {body_text[:200]}"
-            if status_code:
-                error_msg += f". HTTP Status: {status_code}"
+            if response_text:
+                error_msg += f". Response: {response_text[:200]}"
             raise ValueError(error_msg)
         except Exception as e:
             raise Exception(f"Failed to fetch {data_type} data: {str(e)}")
