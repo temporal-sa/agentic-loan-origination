@@ -163,6 +163,7 @@ When analyzing income and loan affordability, write Python code to:
 1. Calculate debt-to-income (DTI) ratios
 2. Analyze income trends over time
 3. Calculate statistical risk scores
+4. Validate data consistency between sources
 
 Always execute calculations using code to ensure accuracy."""
 
@@ -172,8 +173,10 @@ When analyzing expenses and spending patterns, write Python code to:
 1. Categorize expenses by type (essential, variable, discretionary)
 2. Calculate spending velocity and financial stress indicators
 3. Validate declared expenses against actual spending
+4. Detect financial discipline and risk factors
+5. Validate declared expenses against actual spending
 
-Always execute calculations using code to ensure accuracy."""
+Always execute calculations using code to ensure accuracy and provide behavioral insights."""
 
 
 # ============================================================================
@@ -211,14 +214,22 @@ Write Python code to:
 
 2. Calculate disposable income after loan: income - expenses - monthly_loan_payment
 
-3. Calculate income stability risk score (0-100, where 0 is lowest risk):
+3. Validate declared income against bank statement data (if available)
+   - Check for consistency
+   - Flag any discrepancies > 20%
+
+4. Calculate income stability risk score (0-100, where 0 is lowest risk):
    - If bank statement shows consistent deposits: lower risk
    - If income varies significantly: higher risk
+
+5. Determine loan affordability: Can applicant afford monthly payments?  
 
 Return a structured analysis with:
 - DTI ratio (percentage)
 - Disposable income after loan
+- Income validation result (consistent/discrepancy/no_data)
 - Risk score (0-100)
+- Affordability assessment (affordable/marginal/risky)
 - Detailed reasoning
 """
 
@@ -278,7 +289,28 @@ Write Python code to perform comprehensive spending behavior analysis:
 
    Calculate average spending velocity over past 3 months.
 
-**3. SAVINGS DISCIPLINE:**
+**3. PURCHASE PATTERN ANALYSIS:**
+   - Count small frequent transactions (< $20) vs. large purchases (> $200)
+   - Analyze transaction timing:
+     * Weekend spending (Friday-Sunday) - indicator of discretionary spending
+     * Evening spending (after 6 PM) - impulse purchases
+     * Payday spending (within 3 days of deposit) - spending discipline
+   - Identify merchant categories (retail, restaurants, entertainment, etc.)
+   - Calculate discretionary spending ratio: (discretionary / total_expenses) * 100
+
+**4. FINANCIAL STRESS INDICATORS:**
+   Detect red flags:
+   - Minimum balance throughout month (if < $100 frequently = high stress)
+   - Overdraft fees or NSF (insufficient funds) charges
+   - Payday loans or cash advance transactions
+   - Gambling transactions (casinos, lottery, betting)
+   - Late payment fees on bills
+   - Multiple balance transfers between accounts
+   - Declining balance trend over 3+ months
+
+   Count red flags and assess severity.   
+
+**5. SAVINGS DISCIPLINE:**
    - Check for automatic savings transfers (positive indicator)
    - Calculate savings buffer: month-end balance / monthly expenses
    - Buffer > 1.0 = emergency fund present (excellent)
@@ -287,7 +319,33 @@ Write Python code to perform comprehensive spending behavior analysis:
 
    Analyze balance trend: increasing (good), stable (moderate), decreasing (concerning)
 
-**4. FINANCIAL DISCIPLINE ASSESSMENT:**
+**6. EXPENSE VALIDATION:**
+   - Compare declared expenses vs. actual bank statement debits
+   - Calculate discrepancy percentage: abs(declared - actual) / actual * 100
+   - Flag if discrepancy > 20%
+   - Identify reason for discrepancy (underestimated, cash spending, multiple accounts)
+
+**7. BEHAVIORAL RISK SCORE (0-100, where 0 is lowest risk):**
+   Risk factors (add points):
+   - High discretionary spending (>30% of income): +20 points
+   - Fast spending velocity (< 5 days): +15 points
+   - Overdraft/NSF fees present: +20 points
+   - Payday loans/cash advances: +25 points
+   - Gambling transactions: +15 points
+   - No savings buffer (< 0.5): +15 points
+   - Declining balance trend: +10 points
+   - Late payment fees: +10 points
+   - Declared vs actual expense discrepancy > 20%: +10 points
+
+   Positive factors (subtract points):
+   - Automatic savings transfers: -10 points
+   - Savings buffer > 1.0: -15 points
+   - Low discretionary spending (< 20%): -10 points
+   - Increasing balance trend: -10 points
+
+   Final score: Sum all points (min 0, max 100)   
+
+**8. FINANCIAL DISCIPLINE ASSESSMENT:**
    Based on overall analysis:
    - Disciplined (score 0-30): Good spending habits, savings, low discretionary spending
    - Moderate (score 31-60): Balanced spending, some concerns, room for improvement
@@ -295,8 +353,14 @@ Write Python code to perform comprehensive spending behavior analysis:
 
 **Return structured analysis with:**
 - Total actual monthly expenses (by category)
+- Expense-to-income ratio (%)
+- Discretionary spending ratio (%)
 - Spending velocity (days)
 - Savings buffer ratio
+- Expense validation result (matches/discrepancy/red_flags)
+- List of red flags detected (if any)
+- Behavioral risk score (0-100)
 - Financial discipline assessment (disciplined/moderate/undisciplined)
+- Affordability of new loan payment
 - Detailed reasoning and recommendations
 """
