@@ -8,24 +8,34 @@ except:
     API_URL = "http://localhost:8000"
 
 st.set_page_config(
-    page_title="Intelligent Loan Underwriter",
+    page_title="Durable Intelligent Loan Underwriter",
     page_icon="",
 )
-st.title("Intelligent Loan Underwriter — Demo")
+st.title("Durable Intelligent Loan Underwriter — Demo")
 
 tab = st.tabs(["Submit", "Review", "Workflows"])
-
+st.set_page_config(layout="wide")
 
 with tab[0]:
     with st.form("submit_form"):
+        st.subheader("Basic Information")
         applicant_id = st.text_input("Applicant ID", "12345")
         name = st.text_input("Name", "Darshit")
         amount = st.number_input("Loan amount", value=5000.0)
         income = st.number_input("Declared income", value=6000.0)
         expenses = st.number_input("Monthly expenses", value=2000.0)
-        submitted = st.form_submit_button("Submit")
+
+        st.markdown("---")
+        st.subheader("Document Uploads")
+        st.markdown("*Upload supporting documents for verification (images: JPG, PNG, or PDF)*")
+
+        bank_statement = st.file_uploader("Bank Statement (required)", type=["jpg", "jpeg", "png", "pdf"], key="bank_statement")
+        proof_of_id = st.file_uploader("Proof of ID (optional)", type=["jpg", "jpeg", "png", "pdf"], key="proof_of_id")
+
+        submitted = st.form_submit_button("Submit Application")
 
     if submitted:
+        # First, create the workflow and get the workflow_id
         payload = {
             "applicant_id": applicant_id,
             "name": name,
@@ -33,14 +43,41 @@ with tab[0]:
             "income": income,
             "expenses": expenses,
         }
+
         try:
+            # Step 1: Submit the application to get workflow_id (format: "loan-{applicant_id}")
             r = requests.post(f"{API_URL}/submit", json=payload, timeout=10)
             r.raise_for_status()
             data = r.json()
-            st.success("Workflow started")
-            st.json(data)
+            workflow_id = data["workflow_id"]  # This is "loan-{applicant_id}"
+
+            # Step 2: Upload documents (only if provided) using the workflow_id
+            files = {}
+            if bank_statement:
+                files["bank_statement"] = ("bank_statement" + bank_statement.name[bank_statement.name.rfind('.'):], bank_statement, bank_statement.type)
+            if proof_of_id:
+                files["proof_of_id"] = ("proof_of_id" + proof_of_id.name[proof_of_id.name.rfind('.'):], proof_of_id, proof_of_id.type)
+
+            # Only upload if at least one file is provided
+            if files:
+                upload_response = requests.post(
+                    f"{API_URL}/upload/{workflow_id}",
+                    files=files,
+                    timeout=30
+                )
+                upload_response.raise_for_status()
+                upload_data = upload_response.json()
+
+                st.success("Workflow started and documents uploaded successfully!")
+                st.json(data)
+                st.info(f"Documents saved: {upload_data.get('message', '')}")
+            else:
+                st.success("Workflow started successfully!")
+                st.json(data)
+                st.info("No documents uploaded. You can add them later if needed.")
+
         except Exception as e:
-            st.error(f"Failed to start workflow: {e}")
+            st.error(f"Failed to submit application: {e}")
 
 
 with tab[1]:

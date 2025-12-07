@@ -12,7 +12,7 @@ class CreditReportAgent:
     def __init__(self):
         self.data_agent = DataFetchAgent()
 
-    def fetch_and_validate_credit_report(
+    async def fetch_and_validate_credit_report(
         self, applicant_id: str, provider: str, url: str
     ) -> Dict[str, Any]:
         """
@@ -26,7 +26,7 @@ class CreditReportAgent:
         """
 
         # Use data fetch agent to get credit data
-        credit_data = self.data_agent.fetch_data(url, f"{provider} credit report")
+        credit_data = await self.data_agent.fetch_data(url, f"{provider} credit report")
 
         # Agent-based validation logic
         if "score" not in credit_data:

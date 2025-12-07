@@ -1,3 +1,4 @@
+import asyncio
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError
@@ -10,50 +11,68 @@ class SupervisorWorkflow:
     """
     Temporal Supervisor Workflow for Loan Underwriting.
 
-    ARCHITECTURE PATTERN - Temporal + Strands Coexistence:
+    ARCHITECTURE PATTERN - Multi-Layer AI Stack:
     ═══════════════════════════════════════════════════════════════
 
-    This workflow demonstrates the value proposition of combining:
+    This workflow demonstrates a sophisticated AI stack combining:
 
-    1. TEMPORAL (Orchestration Layer - Outer Loop):
+    1. TEMPORAL (Orchestration Layer - Outer layer):
        - Durable workflow execution (survives crashes, restarts)
        - Automatic retry policies for transient failures
        - Provider fallback strategies (CIBIL → Experian)
        - Human-in-the-loop with signals and queries
-       - Parallel activity execution
+       - Fan-out parallel execution (documents, assessments)
        - Complete audit trail and observability
-       - Time-based operations (timeouts, delays)
+       - Time-based operations (timeouts, delays, waits)
+       - State management (document upload, human review)
 
     2. STRANDS AGENTS (Intelligence Layer - Inner Loop):
        - HTTP requests with intelligent error handling
        - Data validation and quality assessment
        - Multi-agent collaboration within activities
        - Structured reasoning and decision-making
-       - Tool usage (http_request etc.)
+       - Tool usage (http_request, etc.)
        - Context-aware logging and diagnostics
+
+    3. AWS BEDROCK NOVA PRO (Vision Processing):
+       - Multimodal OCR for document extraction
+       - Synchronous processing with immediate results
+       - Structured data extraction from bank statements, IDs, etc.
+       - Parallel document processing orchestrated by Temporal
+
+    4. AGENTCORE CODE INTERPRETER (Financial Analysis):
+       - Advanced financial calculations and analysis
+       - Income/expense pattern recognition
+       - Code-based computation for complex assessments
+       - Python code execution for numerical analysis
 
     ═══════════════════════════════════════════════════════════════
 
     WORKFLOW PHASES:
     ----------------
+    Phase 0: Document Upload Wait (Temporal state management)
+             - Wait for documents via signal
+             - Store document paths in workflow state
+
     Phase 1: Data Acquisition (Temporal orchestrates, Strands fetches)
              - Bank account data (HTTP agent)
-             - Document metadata (HTTP agent)
+             - Document processing (AWS Bedrock Nova Pro OCR - parallel)
              - Credit reports with fallback (HTTP agent + validation)
 
-    Phase 2: Parallel Analysis (Temporal coordinates, Strands analyzes)
-             - Income assessment
-             - Expense assessment
-             - Credit assessment
+    Phase 2: Parallel Analysis (Temporal coordinates, AgentCore analyzes)
+             - Income assessment (AgentCore Code Interpreter)
+             - Expense assessment (AgentCore Code Interpreter)
+             - Credit assessment (Strands agent)
 
-    Phase 3: Decision Making (Strands agent with LLM)
-             - Aggregate all data
-             - Generate recommendation
+    Phase 3: Decision Aggregation (Strands agent with LLM)
+             - Aggregate all assessment results
+             - Generate loan recommendation
 
-    Phase 4: Human Review (Temporal manages state)
-             - Pause workflow
+    Phase 4: Human Review (Temporal manages durable wait)
+             - Expose summary via query
+             - Pause workflow indefinitely
              - Wait for human signal
-             - Resume with decision
+             - Resume with final decision
     """
 
     def __init__(self) -> None:
@@ -65,6 +84,8 @@ class SupervisorWorkflow:
             - _human_decision: Stores the human reviewer's decision
             - _summary: Aggregated data for human review
             - _final_result: Complete workflow outcome
+            - _document_paths: Paths to uploaded documents
+            - _documents_uploaded: Flag indicating documents have been uploaded
 
         Retry Policy:
             - Exponential backoff with configurable parameters
@@ -77,6 +98,10 @@ class SupervisorWorkflow:
         self._summary: Optional[Dict[str, Any]] = None
         self._final_result: Optional[Dict[str, Any]] = None
 
+        # Document upload state
+        self._document_paths: Optional[Dict[str, str]] = None
+        self._documents_uploaded = False
+
         # Global retry policy for activities
         # This is Temporal's mechanism for handling transient failures
         self._default_retry_policy = RetryPolicy(
@@ -85,6 +110,57 @@ class SupervisorWorkflow:
             backoff_coefficient=2.0,
             maximum_attempts=10
         )
+
+    async def _process_single_document(
+        self,
+        applicant_id: str,
+        doc_type: str,
+        local_path: str
+    ) -> Dict[str, Any]:
+        """
+        Process a single document with AWS Bedrock Nova Pro.
+
+        TEMPORAL PATTERN - SYNCHRONOUS ACTIVITY:
+        - Processes document synchronously using AWS Bedrock Nova Pro
+        - Each document processed independently in parallel
+        - Failures isolated to single document (won't affect others)
+        - No polling needed - returns immediately with results
+
+        Args:
+            applicant_id: Applicant identifier
+            doc_type: Type of document (e.g., 'bank_statement', 'id_proof')
+            local_path: Local file path to the document
+
+        Returns:
+            Processing result with status and extracted data
+        """
+        workflow.logger.info(f"Starting OCR processing for {doc_type} with AWS Bedrock Nova Pro")
+
+        try:
+            # Process document with AWS Bedrock Nova Pro
+            # Temporal's retry policy handles transient failures
+            result = await workflow.execute_activity(
+                "trigger_document_processing",
+                {
+                    "applicant_id": applicant_id,
+                    "doc_type": doc_type,
+                    "local_path": local_path
+                },
+                start_to_close_timeout=timedelta(minutes=15),  # Vision models may take longer
+                retry_policy=self._default_retry_policy
+            )
+
+            workflow.logger.info(f"OCR processing completed for {doc_type}: {result['status']}")
+            return result
+
+        except ActivityError as e:
+            # Activity failed after all retry attempts
+            workflow.logger.error(f"Activity error processing {doc_type}: {e}")
+            return {
+                "doc_type": doc_type,
+                "status": "error",
+                "error": str(e)
+            }
 
     @workflow.run
     async def run(self, application: Dict[str, Any]):
@@ -95,6 +171,17 @@ class SupervisorWorkflow:
         demonstrating Temporal's orchestration capabilities combined with
         Strands agents' intelligence within each activity.
         """
+
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 0: WAIT FOR DOCUMENT UPLOAD
+        # ═══════════════════════════════════════════════════════════
+        # Wait for documents to be uploaded before proceeding
+        workflow.logger.info("Waiting for documents to be uploaded...")
+        await workflow.wait_condition(lambda: self._documents_uploaded, timeout=timedelta(minutes=10))
+        workflow.logger.info(f"Documents uploaded: {self._document_paths}")
+
+        # Add document paths to application data for activities
+        application["document_paths"] = self._document_paths
 
         # ═══════════════════════════════════════════════════════════
         # PHASE 1: DATA ACQUISITION
@@ -112,15 +199,45 @@ class SupervisorWorkflow:
             retry_policy=self._default_retry_policy
         )
 
-        # Activity 2: Fetch document metadata
-        # - Temporal: Ensures reliable execution
-        # - Strands: Fetches and validates document completeness
-        docs = await workflow.execute_activity(
-            "fetch_documents",
-            application["applicant_id"],
-            start_to_close_timeout=timedelta(seconds=60),
-            retry_policy=self._default_retry_policy
-        )
+        # Activity 2: Process documents with AWS Bedrock Nova Pro
+        # ════════════════════════════════════════════════════════════
+        # KEY ARCHITECTURE PATTERN - FAN-OUT PARALLEL PROCESSING:
+        # - Fan-out: Launch all document processing tasks in parallel
+        # - Use asyncio.gather() for concurrent execution (Temporal-safe)
+        # - Each document processed independently with own retry policy
+        # - Workflow orchestrates parallel execution and aggregates results
+        # - AWS Bedrock Nova Pro extracts structured data synchronously
+        # ════════════════════════════════════════════════════════════
+        document_paths = application.get("document_paths", {})
+
+        if document_paths:
+            workflow.logger.info(f"Processing {len(document_paths)} documents in parallel with AWS Bedrock Nova Pro")
+
+            # FAN-OUT: Create parallel tasks for each document
+            document_tasks = [
+                self._process_single_document(
+                    application["applicant_id"],
+                    doc_type,
+                    local_path
+                )
+                for doc_type, local_path in document_paths.items()
+            ]
+
+            # Wait for all parallel document processing to complete
+            # Temporal ensures durability - even if workflow restarts, completed tasks won't re-execute
+            processed_documents = await asyncio.gather(*document_tasks)
+
+            docs = {
+                "documents": processed_documents,
+                "total_processed": len(processed_documents),
+                "successful": len([d for d in processed_documents if d.get("status") == "success"]),
+                "failed": len([d for d in processed_documents if d.get("status") != "success"])
+            }
+        else:
+            workflow.logger.warning("No document paths provided, skipping OCR processing")
+            docs = {"documents": [], "status": "no_documents_uploaded"}
+
+        await workflow.sleep(20)  # Simulate processing delay | CRASH YOUR WORKER HERE    
 
         # Activity 3: Fetch credit report with provider fallback
         # ════════════════════════════════════════════════════════
@@ -150,33 +267,32 @@ class SupervisorWorkflow:
         # ═══════════════════════════════════════════════════════════
         # PHASE 2: PARALLEL SPECIALIST ASSESSMENTS
         # ═══════════════════════════════════════════════════════════
-        # Temporal coordinates parallel execution
-        # Strands agents perform specialized analysis (future: multi-agent swarms)
-        # TEMPORAL ORCHESTRATION: Launch activities in parallel
+        # Temporal coordinates parallel execution with asyncio.gather()
+        # AgentCore Code Interpreter performs sophisticated financial analysis
+        # TEMPORAL ORCHESTRATION: Launch activities in parallel using asyncio.gather()
         # These are independent assessments that can run concurrently
-        income_task = workflow.execute_activity(
-            "income_assessment",
-            {"application": application, "bank": bank, "credit": credit},
-            start_to_close_timeout=timedelta(seconds=90),
-            retry_policy=self._default_retry_policy
+        
+        # Execute all three assessments in parallel
+        credit_res, income_res, expense_res = await asyncio.gather(
+            workflow.execute_activity(
+                "credit_assessment",
+                {"application": application, "credit": credit},
+                start_to_close_timeout=timedelta(minutes=5),  # Credit is quick
+                retry_policy=self._default_retry_policy
+            ),
+            workflow.execute_activity(
+                "income_assessment",
+                {"application": application, "bank": bank, "credit": credit, "documents": docs},
+                start_to_close_timeout=timedelta(minutes=30),  # Increased from 15 min for AgentCore
+                retry_policy=self._default_retry_policy
+            ),
+            workflow.execute_activity(
+                "expense_assessment",
+                {"application": application, "bank": bank, "documents": docs},
+                start_to_close_timeout=timedelta(minutes=30),  # Increased from 15 min for AgentCore
+                retry_policy=self._default_retry_policy
+            )
         )
-        expense_task = workflow.execute_activity(
-            "expense_assessment",
-            {"application": application, "bank": bank},
-            start_to_close_timeout=timedelta(seconds=90),
-            retry_policy=self._default_retry_policy
-        )
-        credit_task = workflow.execute_activity(
-            "credit_assessment",
-            {"application": application, "credit": credit},
-            start_to_close_timeout=timedelta(seconds=90),
-            retry_policy=self._default_retry_policy
-        )
-
-        # Wait for all parallel tasks to complete
-        income_res = await income_task
-        expense_res = await expense_task
-        credit_res = await credit_task
 
         # ═══════════════════════════════════════════════════════════
         # PHASE 3: DECISION AGGREGATION
@@ -235,6 +351,24 @@ class SupervisorWorkflow:
         self._final_result = final
 
         return final
+
+    @workflow.signal
+    def documents_uploaded(self, data: Dict[str, Any]):
+        """
+        Signal handler for document upload completion.
+
+        TEMPORAL SIGNAL PATTERN:
+        - Signals allow external systems to communicate with running workflows
+        - Document paths are provided after files are uploaded to backend/uploads/
+        - Workflow resumes processing once documents are available
+
+        Args:
+            data: Document upload information
+                  {"document_paths": {...}}
+        """
+        self._document_paths = data.get("document_paths")
+        self._documents_uploaded = True
+        workflow.logger.info(f"Received document paths via signal: {self._document_paths}")
 
     @workflow.signal
     def human_review(self, decision: Dict[str, Any]):
