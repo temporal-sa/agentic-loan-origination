@@ -1,6 +1,7 @@
 from temporalio import activity
 from typing import Dict, Any
 import json
+import re
 from strands import Agent
 from strands_tools import http_request
 
@@ -66,7 +67,16 @@ When making requests:
                 raise ValueError(f"No text content in agent response for {data_type} API")
 
             # Parse the JSON response
-            parsed_data = json.loads(response_text)
+            # First try direct JSON parse
+            try:
+                parsed_data = json.loads(response_text)
+            except json.JSONDecodeError:
+                # Model may have wrapped the JSON in prose or a markdown code fence
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if not json_match:
+                    raise
+                parsed_data = json.loads(json_match.group(0))
+
             activity.logger.info(f"Successfully fetched {data_type} data: {parsed_data}")
             return parsed_data
 

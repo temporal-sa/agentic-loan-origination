@@ -17,7 +17,7 @@
       "responses": [
         {
           "uuid": "d5abe918-426a-48d1-90ae-36e395379977",
-          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"accounts\": [\n    {\n      \"type\": \"savings\",\n      \"balance\": 109500,\n      \"account_number\": \"****5678\"\n    }\n  ],\n  \"total_balance\": 109500,\n  \"bank_name\": \"Durable Bank\"\n}",
+          "body": "{\n  \"applicant_id\": \"{{queryParam 'applicant_id'}}\",\n  \"accounts\": [\n    {\n      \"type\": \"savings\",\n      \"balance\": 109500,\n      \"account_number\": \"5678\"\n    }\n  ],\n  \"total_balance\": 109500,\n  \"bank_name\": \"Durable Bank\"\n}",
           "latency": 0,
           "statusCode": 200,
           "label": "",
